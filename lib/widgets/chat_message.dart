@@ -1,10 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:s_chat/widgets/message_bubble.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-final authenticatedUserId = FirebaseAuth.instance.currentUser!.uid;
+final authenticatedUserId = Supabase.instance.client.auth.currentUser!.id;
 
 class ChatMessages extends StatefulWidget {
   const ChatMessages({super.key});

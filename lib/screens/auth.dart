@@ -1,11 +1,9 @@
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:s_chat/widgets/user_image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-final _firebase = FirebaseAuth.instance;
 final _supabase = Supabase.instance.client;
 
 class AuthScreen extends StatefulWidget {
@@ -41,11 +39,16 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
     try {
-      await _firebase.signInWithEmailAndPassword(
-        email: _enteredEmail,
-        password: _enteredPass,
+      // await _firebase.signInWithEmailAndPassword(
+      //   email: _enteredEmail,
+      //   password: _enteredPass,
+      // );
+      await _supabase.auth.signInWithPassword(
+          email: _enteredEmail,
+          password: _enteredPass,
       );
-    } on FirebaseAuthException catch (error) {
+
+    } on AuthException catch (error) {
       _messageBar(error.message ?? 'Authentication Failed.');
       setState(() {
         _isAuthing = false;
@@ -59,11 +62,15 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
     try {
-      final userCredentials = await _firebase.createUserWithEmailAndPassword(
-        email: _enteredEmail,
-        password: _enteredPass,
+      // final userCredentials = await _firebase.createUserWithEmailAndPassword(
+      //   email: _enteredEmail,
+      //   password: _enteredPass,
+      // );
+      final AuthResponse userCredentials = await _supabase.auth.signUp(
+          email: 'valid.email@supabase.io',
+          password: 'example-password'
       );
-      final imagePath = '${userCredentials.user!.uid}.jpg';
+      final imagePath = '${userCredentials.user!.id}.jpg';
       await _supabase.storage
           .from('user_images')
           .upload(
@@ -76,13 +83,13 @@ class _AuthScreenState extends State<AuthScreen> {
           .getPublicUrl(imagePath);
       await FirebaseFirestore.instance
           .collection('users')
-          .doc(userCredentials.user!.uid)
+          .doc(userCredentials.user!.id)
           .set({
             'username': _enteredName,
             'email': _enteredEmail,
             'image_url': imageUrl,
           });
-    } on FirebaseAuthException catch (error) {
+    } on AuthException catch (error) {
       // if(error.code == 'email-already-in-use')...
       _messageBar(error.message ?? 'Authentication Failed.');
       setState(() {

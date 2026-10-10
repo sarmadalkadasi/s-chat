@@ -1,7 +1,7 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:s_chat/widgets/chat_message.dart';
 import 'package:s_chat/widgets/new_message.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ChatScreen extends StatelessWidget {
   const ChatScreen({super.key});
@@ -19,7 +19,7 @@ class ChatScreen extends StatelessWidget {
         ),
         actions: [
           IconButton(
-            onPressed: () => FirebaseAuth.instance.signOut(),
+            onPressed: () => Supabase.instance.client.auth.signOut(),
             icon: Icon(Icons.power_settings_new),
           ),
         ],

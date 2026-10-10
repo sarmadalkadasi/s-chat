@@ -1,18 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:s_chat/screens/auth.dart';
+import 'package:s_chat/s_chat.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:s_chat/screens/chat.dart';
-import 'package:s_chat/screens/splash.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'firebase_options.dart';
-
-final _colorScheme = ColorScheme.fromSeed(
-  seedColor: const Color(0xFF075E54),
-  brightness: Brightness.light,
-);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,7 +22,7 @@ void main() async {
 }
 
 void listenToIncomingMessages() {
-  final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+  final currentUserId = Supabase.instance.client.auth.currentUser?.id;
   bool isFirstLoad = true; // ignore the initial history pull
 
   FirebaseFirestore.instance
@@ -63,27 +55,4 @@ void listenToIncomingMessages() {
     }
   });
 }
-class SChat extends StatelessWidget {
-  const SChat({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'SChat',
-      debugShowCheckedModeBanner: false,
 
-      theme: ThemeData().copyWith(colorScheme: _colorScheme),
-      home: StreamBuilder(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const SplashScreen();
-          }
-          if (snapshot.hasData) {
-            return const ChatScreen();
-          }
-          return const AuthScreen();
-        },
-      ),
-    );
-  }
-}

@@ -1,6 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class NewMessage extends StatefulWidget {
   const NewMessage({super.key});
@@ -30,7 +30,7 @@ class _NewMessageState extends State<NewMessage> {
     setState(() => _isWriting = false);
 
     // send message to firebase
-    final uid = FirebaseAuth.instance.currentUser!.uid;
+    final uid = Supabase.instance.client.auth.currentUser!.id;
     await FirebaseFirestore.instance.collection('chat_messages').add({
       'chat_id': 1,
       'user_id': uid,
