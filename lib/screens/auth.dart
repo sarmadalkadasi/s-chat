@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:s_chat/widgets/user_image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -39,17 +38,12 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
     try {
-      // await _firebase.signInWithEmailAndPassword(
-      //   email: _enteredEmail,
-      //   password: _enteredPass,
-      // );
       await _supabase.auth.signInWithPassword(
-          email: _enteredEmail,
-          password: _enteredPass,
+        email: _enteredEmail,
+        password: _enteredPass,
       );
-
     } on AuthException catch (error) {
-      _messageBar(error.message ?? 'Authentication Failed.');
+      _messageBar(error.message);
       setState(() {
         _isAuthing = false;
       });
@@ -58,43 +52,66 @@ class _AuthScreenState extends State<AuthScreen> {
 
   void _signup() async {
     _saveForm();
-    if (!_isAuthing) {
-      return;
+    if (!_isAuthing) return;
+
+    // ⚠️ Capture messenger BEFORE any await — the widget may be disposed after
+    // signUp() triggers onAuthStateChange and navigates to ChatScreen.
+    final messenger = ScaffoldMessenger.of(context);
+
+    void showError(String msg) {
+      debugPrint('[Signup Error] $msg');
+      messenger.clearSnackBars();
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+      if (mounted) setState(() => _isAuthing = false);
     }
+
     try {
-      // final userCredentials = await _firebase.createUserWithEmailAndPassword(
-      //   email: _enteredEmail,
-      //   password: _enteredPass,
-      // );
+      debugPrint('[Signup] 1/4 Creating auth user...');
       final AuthResponse userCredentials = await _supabase.auth.signUp(
-          email: 'valid.email@supabase.io',
-          password: 'example-password'
+        email: _enteredEmail,
+        password: _enteredPass,
+        data: {'username': _enteredName},
       );
-      final imagePath = '${userCredentials.user!.id}.jpg';
-      await _supabase.storage
-          .from('user_images')
-          .upload(
-            imagePath,
-            _selectedImage!,
-            fileOptions: const FileOptions(upsert: true),
-          );
-      final String imageUrl = _supabase.storage
-          .from('user_images')
-          .getPublicUrl(imagePath);
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userCredentials.user!.id)
-          .set({
-            'username': _enteredName,
-            'email': _enteredEmail,
-            'image_url': imageUrl,
-          });
-    } on AuthException catch (error) {
-      // if(error.code == 'email-already-in-use')...
-      _messageBar(error.message ?? 'Authentication Failed.');
-      setState(() {
-        _isAuthing = false;
+
+      final user = userCredentials.user;
+      if (user == null) throw const AuthException('User registration failed.');
+      debugPrint('[Signup] ✅ User created: ${user.id}');
+
+      String imageUrl = '';
+      if (_selectedImage != null) {
+        final imagePath = '${user.id}.jpg';
+        debugPrint('[Signup] 2/4 Uploading → user_images/$imagePath');
+        await _supabase.storage.from('user_images').upload(
+          imagePath,
+          _selectedImage!,
+          fileOptions: const FileOptions(upsert: true),
+        );
+        final rawUrl =
+            _supabase.storage.from('user_images').getPublicUrl(imagePath);
+        imageUrl = '$rawUrl?t=${DateTime.now().millisecondsSinceEpoch}';
+        debugPrint('[Signup] ✅ Image uploaded: $imageUrl');
+
+        debugPrint('[Signup] 3/4 Updating user metadata...');
+        await _supabase.auth.updateUser(
+          UserAttributes(
+            data: {'username': _enteredName, 'image_url': imageUrl},
+          ),
+        );
+        debugPrint('[Signup] ✅ Metadata updated');
+      }
+
+      debugPrint('[Signup] 4/4 Upserting to users table...');
+      await _supabase.from('users').upsert({
+        'id': user.id,
+        'username': _enteredName,
+        'email': _enteredEmail,
+        'image_url': imageUrl,
       });
+      debugPrint('[Signup] ✅ Signup fully complete');
+    } on AuthException catch (error) {
+      showError(error.message);
+    } catch (error) {
+      showError('Error: $error');
     }
   }
 

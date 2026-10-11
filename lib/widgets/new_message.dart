@@ -1,4 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -29,14 +28,38 @@ class _NewMessageState extends State<NewMessage> {
     _messageController.clear();
     setState(() => _isWriting = false);
 
-    // send message to firebase
-    final uid = Supabase.instance.client.auth.currentUser!.id;
-    await FirebaseFirestore.instance.collection('chat_messages').add({
-      'chat_id': 1,
-      'user_id': uid,
+    final currentUser = Supabase.instance.client.auth.currentUser;
+    if (currentUser == null) {
+      return;
+    }
+
+    final metadata = currentUser.userMetadata;
+    String username = metadata?['username'] ?? '';
+    String userImage = metadata?['image_url'] ?? '';
+
+    // If metadata doesn't have the avatar, check users table
+    if (username.isEmpty || userImage.isEmpty) {
+      try {
+        final profile = await Supabase.instance.client
+            .from('users')
+            .select('username, image_url')
+            .eq('id', currentUser.id)
+            .maybeSingle();
+        if (profile != null) {
+          if (username.isEmpty) username = profile['username'] ?? 'User';
+          if (userImage.isEmpty) userImage = profile['image_url'] ?? '';
+        }
+      } catch (_) {}
+    }
+
+    if (username.isEmpty) username = 'User';
+
+    await Supabase.instance.client.from('chat_messages').insert({
+      'user_id': currentUser.id,
       'text': enteredMessage,
-      'media': null,
-      'createdAt': Timestamp.now(),
+      'username': username,
+      'user_image': userImage,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
     });
   }
 

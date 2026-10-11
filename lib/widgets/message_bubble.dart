@@ -9,6 +9,7 @@ class MessageBubble extends StatelessWidget {
     required this.uname,
     required this.userImage,
     required this.showAvatar,
+    this.showName,
   });
 
   final String message;
@@ -17,6 +18,7 @@ class MessageBubble extends StatelessWidget {
   final String uname;
   final String userImage;
   final bool showAvatar;
+  final bool? showName;
 
   @override
   Widget build(BuildContext context) {
@@ -30,69 +32,63 @@ class MessageBubble extends StatelessWidget {
         if (!isMe) ...[
           const SizedBox(width: 8), // Margin from screen edge
           if (showAvatar)
-            Stack(
-              clipBehavior: Clip.none, // Prevents the green badge from getting cut off
-              children: [
-                // The Outer Presence Ring/Container
-                Container(
-                  width: 38, // Slightly wider to account for the ring border
-                  height: 38,
-                  padding: const EdgeInsets.all(2.0), // Gap between ring and avatar
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle, // Using circular ring wrapper for smooth aesthetics
-                    border: Border.all(
-                      color: Colors.greenAccent.shade400, // Active green ring (set to transparent if offline)
-                      width: 1.5,
-                    ),
-                  ),
+            Container(
+              width: 42,
+              height: 42,
+              padding: const EdgeInsets.all(2.0), // Gap between ring and avatar
+              decoration: BoxDecoration(
+                shape: BoxShape
+                    .circle, // Using circular ring wrapper for smooth aesthetics
+                border: Border.all(
+                  color: Colors
+                      .greenAccent
+                      .shade400, // Active green ring (set to transparent if offline)
+                  width: 1.5,
+                ),
+              ),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(100),
+                onTap: () {
+                  showProfileImageViewer(
+                    context,
+                    imageUrl: userImage,
+                    username: uname,
+                  );
+                },
+                child: Hero(
+                  tag: userImage.isNotEmpty ? 'bubble_avatar_$userImage' : UniqueKey().toString(),
                   child: Container(
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(20),
                       color: Theme.of(context).colorScheme.primaryContainer,
                       image: userImage.isNotEmpty
                           ? DecorationImage(
-                        image: NetworkImage(userImage),
-                        fit: BoxFit.cover,
-                      )
+                              image: NetworkImage(userImage),
+                              fit: BoxFit.cover,
+                            )
                           : null,
                     ),
                     child: userImage.isEmpty
                         ? Center(
-                      child: Text(
-                        uname.isNotEmpty ? uname[0].toUpperCase() : '?',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                          color: Theme.of(context).colorScheme.onPrimaryContainer,
-                        ),
-                      ),
-                    )
+                            child: Text(
+                              uname.isNotEmpty ? uname[0].toUpperCase() : '?',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onPrimaryContainer,
+                              ),
+                            ),
+                          )
                         : null,
                   ),
                 ),
-
-                // The Small Corner Indicator Dot Badge
-                Positioned(
-                  right: -1,
-                  bottom: -1,
-                  child: Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: Colors.greenAccent.shade400, // Green status color
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: Theme.of(context).scaffoldBackgroundColor, // Matches app background to look cleanly cut out
-                        width: 1.5,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+              ),
             )
           else
-          // Critical placeholder box keeping messages perfectly aligned
-          // Match the exact 38px width of your new custom ring setup
+            // Critical placeholder box keeping messages perfectly aligned
+            // Match the exact 38px width of your new custom ring setup
             const SizedBox(width: 28),
 
           const SizedBox(width: 8), // Space between avatar layout and bubble
@@ -105,7 +101,10 @@ class MessageBubble extends StatelessWidget {
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.70,
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 10.0),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 14.0,
+              vertical: 10.0,
+            ),
             decoration: BoxDecoration(
               color: isMe
                   ? Theme.of(context).colorScheme.primary
@@ -125,11 +124,12 @@ class MessageBubble extends StatelessWidget {
               ],
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start, // Align internal text nicely
+              crossAxisAlignment:
+                  CrossAxisAlignment.start, // Align internal text nicely
               mainAxisSize: MainAxisSize.min,
               children: [
                 // Only show user names on group entries if it's the start of a block
-                if (!isMe && showAvatar) ...[
+                if (!isMe && (showName ?? showAvatar)) ...[
                   Text(
                     uname,
                     style: TextStyle(
@@ -159,8 +159,12 @@ class MessageBubble extends StatelessWidget {
                     time,
                     style: TextStyle(
                       color: isMe
-                          ? Theme.of(context).colorScheme.onPrimary.withAlpha(237)
-                          : Theme.of(context).colorScheme.onSecondaryContainer.withAlpha(240),
+                          ? Theme.of(
+                              context,
+                            ).colorScheme.onPrimary.withAlpha(237)
+                          : Theme.of(
+                              context,
+                            ).colorScheme.onSecondaryContainer.withAlpha(240),
                       fontSize: 9.5,
                       fontWeight: FontWeight.w400,
                     ),
@@ -176,4 +180,95 @@ class MessageBubble extends StatelessWidget {
       ],
     );
   }
+}
+
+void showProfileImageViewer(
+  BuildContext context, {
+  required String imageUrl,
+  required String username,
+}) {
+  showDialog(
+    context: context,
+    barrierColor: Colors.black.withAlpha(210),
+    builder: (ctx) {
+      return Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Top Bar with username and close button
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    username,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            // Profile image card with Hero animation
+            Hero(
+              tag: imageUrl.isNotEmpty ? 'bubble_avatar_$imageUrl' : UniqueKey().toString(),
+              child: ClipRRect(
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(24)),
+                child: Container(
+                  width: 340,
+                  height: 340,
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  child: imageUrl.isNotEmpty
+                      ? Image.network(
+                          imageUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) => Center(
+                            child: Text(
+                              username.isNotEmpty ? username[0].toUpperCase() : '?',
+                              style: TextStyle(
+                                fontSize: 72,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).colorScheme.onPrimaryContainer,
+                              ),
+                            ),
+                          ),
+                          loadingBuilder: (context, child, progress) {
+                            if (progress == null) return child;
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          },
+                        )
+                      : Center(
+                          child: Text(
+                            username.isNotEmpty ? username[0].toUpperCase() : '?',
+                            style: TextStyle(
+                              fontSize: 72,
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(context).colorScheme.onPrimaryContainer,
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    },
+  );
 }

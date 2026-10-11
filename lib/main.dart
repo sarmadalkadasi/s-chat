@@ -1,4 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:s_chat/s_chat.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -21,38 +21,52 @@ void main() async {
   runApp(const SChat());
 }
 
+StreamSubscription? _incomingMessagesSubscription;
+
 void listenToIncomingMessages() {
-  final currentUserId = Supabase.instance.client.auth.currentUser?.id;
-  bool isFirstLoad = true; // ignore the initial history pull
+  Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+    final session = data.session;
+    if (session != null) {
+      _incomingMessagesSubscription?.cancel();
+      bool isFirstLoad = true; // ignore the initial history pull
 
-  FirebaseFirestore.instance
-      .collection('chat_messages')
-      .orderBy('createdAt', descending: true)
-      .limit(1)
-      .snapshots()
-      .listen((snapshot) {
-    // If the stream just woke up, skip processing the existing latest message
-    if (isFirstLoad) {
-      isFirstLoad = false;
-      return;
-    }
+      _incomingMessagesSubscription = Supabase.instance.client
+          .from('chat_messages')
+          .stream(primaryKey: ['id'])
+          .order('created_at', ascending: false)
+          .limit(1)
+          .listen(
+            (messages) {
+              // If the stream just woke up, skip processing the existing latest message
+              if (isFirstLoad) {
+                isFirstLoad = false;
+                return;
+              }
 
-    if (snapshot.docs.isEmpty) return;
+              if (messages.isEmpty) return;
 
-    final latestDoc = snapshot.docs.first;
-    final data = latestDoc.data();
+              final latestMessage = messages.first;
+              final currentUserId =
+                  Supabase.instance.client.auth.currentUser?.id;
+              final String senderId = latestMessage['user_id'] ?? '';
+              final String messageText = latestMessage['text'] ?? '';
+              final String username = latestMessage['username'] ?? 'Anonymous';
 
-    final String senderId = data['user_id'] ?? '';
-    final String messageText = data['text'] ?? '';
-    final String username = data['username'] ?? 'Anonymous';
-
-    // Notify only if someone else sent it
-    if (senderId != currentUserId && messageText.isNotEmpty) {
-      LocalNotificationManager.showNotification(
-        title: username,
-        body: messageText,
-      );
+              // Notify only if someone else sent it
+              if (senderId != currentUserId && messageText.isNotEmpty) {
+                LocalNotificationManager.showNotification(
+                  title: username,
+                  body: messageText,
+                );
+              }
+            },
+            onError: (error) {
+              debugPrint('Incoming messages stream error: $error');
+            },
+          );
+    } else {
+      _incomingMessagesSubscription?.cancel();
+      _incomingMessagesSubscription = null;
     }
   });
 }
-

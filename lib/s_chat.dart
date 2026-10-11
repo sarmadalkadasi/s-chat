@@ -24,7 +24,7 @@ class SChat extends StatelessWidget {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const SplashScreen();
           }
-          if (snapshot.hasData) {
+          if (snapshot.data?.session != null) {
             return const ChatScreen();
           }
           return const AuthScreen();
