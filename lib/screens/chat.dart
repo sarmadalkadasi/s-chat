@@ -12,6 +12,8 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
+  final ValueNotifier<EditingMessage?> _editingNotifier =
+      ValueNotifier<EditingMessage?>(null);
   bool _canJump = false;
 
   static const double _jumpButtonThreshold = 200;
@@ -26,6 +28,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    _editingNotifier.dispose();
     super.dispose();
   }
 
@@ -93,8 +96,13 @@ class _ChatScreenState extends State<ChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            Expanded(child: ChatMessages(scrollController: _scrollController)),
-            const NewMessage(),
+            Expanded(
+              child: ChatMessages(
+                scrollController: _scrollController,
+                editingNotifier: _editingNotifier,
+              ),
+            ),
+            NewMessage(editingNotifier: _editingNotifier),
           ],
         ),
       ),
