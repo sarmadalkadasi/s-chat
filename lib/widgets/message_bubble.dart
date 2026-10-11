@@ -48,13 +48,12 @@ class MessageBubble extends StatelessWidget {
               ),
               child: InkWell(
                 borderRadius: BorderRadius.circular(100),
-                onTap: () {
+                onTap: () =>
                   showProfileImageViewer(
                     context,
                     imageUrl: userImage,
                     username: uname,
-                  );
-                },
+                  ),
                 child: Hero(
                   tag: userImage.isNotEmpty ? 'bubble_avatar_$userImage' : UniqueKey().toString(),
                   child: Container(

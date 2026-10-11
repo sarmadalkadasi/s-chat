@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:intl/intl.dart';
 import 'package:s_chat/widgets/message_bubble.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -32,6 +33,7 @@ class _ChatMessagesState extends State<ChatMessages> {
   static const double _atBottomThreshold = 200;
   bool _isAtBottom = true;
   int _lastMessageCount = 0;
+  bool _hasInitialScrolled = false;
 
   // Single persistent stream to prevent reload on scroll or rebuild
   late final Stream<List<Map<String, dynamic>>> _messagesStream;
@@ -51,7 +53,7 @@ class _ChatMessagesState extends State<ChatMessages> {
   @override
   void initState() {
     super.initState();
-    // Chronological order: oldest at top, newest at bottom (WhatsApp / Telegram style)
+    // Chronological order: oldest at top, newest at bottom Modern style)
     _messagesStream = Supabase.instance.client
         .from('chat_messages')
         .stream(primaryKey: ['id'])
@@ -66,7 +68,39 @@ class _ChatMessagesState extends State<ChatMessages> {
     super.dispose();
   }
 
-  bool _hasInitialScrolled = false;
+  void _scrollToBottom({bool animate = false}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.scrollController.hasClients) return;
+      final maxExtent = widget.scrollController.position.maxScrollExtent;
+      if (maxExtent > 0) {
+        if (animate) {
+          widget.scrollController.animateTo(
+            maxExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        } else {
+          widget.scrollController.jumpTo(maxExtent);
+        }
+      } else {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !widget.scrollController.hasClients) return;
+          final maxExtent2 = widget.scrollController.position.maxScrollExtent;
+          if (maxExtent2 > 0) {
+            if (animate) {
+              widget.scrollController.animateTo(
+                maxExtent2,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              );
+            } else {
+              widget.scrollController.jumpTo(maxExtent2);
+            }
+          }
+        });
+      }
+    });
+  }
 
   void _handleScroll(
     List<Map<String, dynamic>> chatDocs,
@@ -77,25 +111,8 @@ class _ChatMessagesState extends State<ChatMessages> {
 
     // 1. Initial open: guarantee jumping to the bottom to show the last message
     if (!_hasInitialScrolled) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !widget.scrollController.hasClients) return;
-        if (widget.scrollController.position.maxScrollExtent > 0) {
-          widget.scrollController.jumpTo(
-            widget.scrollController.position.maxScrollExtent,
-          );
-          _hasInitialScrolled = true;
-        } else {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted || !widget.scrollController.hasClients) return;
-            if (widget.scrollController.position.maxScrollExtent > 0) {
-              widget.scrollController.jumpTo(
-                widget.scrollController.position.maxScrollExtent,
-              );
-              _hasInitialScrolled = true;
-            }
-          });
-        }
-      });
+      _scrollToBottom(animate: false);
+      _hasInitialScrolled = true;
       _lastMessageCount = messageCount;
       return;
     }
@@ -105,16 +122,7 @@ class _ChatMessagesState extends State<ChatMessages> {
       final isLastFromMe = chatDocs.last['user_id'] == currentUserId;
       // Scroll to bottom if I sent a new message OR if user was already at the bottom
       if (_isAtBottom || isLastFromMe) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !widget.scrollController.hasClients) return;
-          if (widget.scrollController.position.maxScrollExtent > 0) {
-            widget.scrollController.animateTo(
-              widget.scrollController.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-            );
-          }
-        });
+        _scrollToBottom(animate: true);
       }
     }
     _lastMessageCount = messageCount;
@@ -258,9 +266,11 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
   @override
   void initState() {
     super.initState();
-    if (!widget.cluster.isMe && widget.cluster.messages.length > 1) {
+    if (!widget.cluster.isMe) {
       widget.scrollController.addListener(_onScroll);
-      WidgetsBinding.instance.addPostFrameCallback((_) => _onScroll());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _onScroll();
+      });
     }
   }
 
@@ -269,10 +279,16 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.scrollController != widget.scrollController) {
       oldWidget.scrollController.removeListener(_onScroll);
-      if (!widget.cluster.isMe && widget.cluster.messages.length > 1) {
+      if (!widget.cluster.isMe) {
         widget.scrollController.addListener(_onScroll);
-        WidgetsBinding.instance.addPostFrameCallback((_) => _onScroll());
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _onScroll();
+        });
       }
+    } else if (!widget.cluster.isMe) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _onScroll();
+      });
     }
   }
 
@@ -283,26 +299,58 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
   }
 
   void _onScroll() {
-    if (!mounted || widget.cluster.isMe || widget.cluster.messages.length <= 1)
+    if (!mounted || widget.cluster.isMe) {
       return;
+    }
     final renderBox = context.findRenderObject() as RenderBox?;
     if (renderBox == null || !renderBox.hasSize) return;
 
     final clusterHeight = renderBox.size.height;
-    const avatarHeight = 42.0; // matches avatar container size
+    const avatarHeight = 42.0;
     final maxOffset = (clusterHeight - avatarHeight).clamp(
       0.0,
       double.infinity,
     );
-    if (maxOffset <= 0) return;
 
-    // Use viewPaddingOf — NOT affected by SafeArea — to get real screen coordinates
-    final topBarOffset = MediaQuery.viewPaddingOf(context).top + kToolbarHeight;
+    if (maxOffset <= 0) {
+      if (_avatarOffset != 0.0) {
+        setState(() => _avatarOffset = 0.0);
+      }
+      return;
+    }
+
+    final viewport = RenderAbstractViewport.of(renderBox);
+    double viewportTop = 0.0;
+    double viewportBottom = MediaQuery.of(context).size.height;
+
+    if (viewport is RenderBox) {
+      final viewportBox = viewport as RenderBox;
+      if (viewportBox.hasSize) {
+        viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+        viewportBottom = viewportTop + viewportBox.size.height;
+      }
+    } else {
+      viewportTop = MediaQuery.viewPaddingOf(context).top + kToolbarHeight;
+      viewportBottom = MediaQuery.of(context).size.height - 70;
+    }
+
     final globalTop = renderBox.localToGlobal(Offset.zero).dy;
+    final globalBottom = globalTop + clusterHeight;
 
-    // Distance cluster top has scrolled past the visible chat area top:
-    final distancePastTop = topBarOffset - globalTop;
-    final targetOffset = distancePastTop.clamp(0.0, maxOffset);
+    final defaultGlobalAvatarTop = globalBottom - avatarHeight;
+    final maxViewportAvatarTop = (viewportBottom - avatarHeight).clamp(
+      viewportTop,
+      double.infinity,
+    );
+    final clampedGlobalAvatarTop = defaultGlobalAvatarTop.clamp(
+      viewportTop,
+      maxViewportAvatarTop,
+    );
+
+    final targetOffset = (clampedGlobalAvatarTop - globalTop).clamp(
+      0.0,
+      maxOffset,
+    );
 
     if ((targetOffset - _avatarOffset).abs() > 0.5) {
       setState(() {
@@ -314,6 +362,8 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
   Widget _buildAvatar(BuildContext context) {
     final userImage = widget.cluster.userImage;
     final uname = widget.cluster.username;
+    final firstMessageId =
+        widget.cluster.messages.first['id'] ?? UniqueKey().toString();
 
     return Container(
       width: 42,
@@ -330,8 +380,8 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
         },
         child: Hero(
           tag: userImage.isNotEmpty
-              ? 'avatar_${widget.cluster.userId}_${widget.cluster.messages.first['id']}'
-              : UniqueKey().toString(),
+              ? 'bubble_avatar_$userImage'
+              : 'avatar_${widget.cluster.userId}_$firstMessageId',
           child: Container(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(20),
@@ -373,7 +423,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     final isSingle = (totalCount == 1);
 
     final messageText = messageDoc['text'] ?? '';
-    final rawTimestamp = messageDoc['created_at'] ?? messageDoc['created_at'];
+    final rawTimestamp = messageDoc['created_at'] ?? messageDoc['createdAt'];
     String formattedTime = '';
     if (rawTimestamp != null) {
       DateTime? dateTime;
@@ -387,7 +437,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       }
     }
 
-    // Telegram-style cluster corner radius
+    // Modern-style cluster corner radius
     final borderRadius = isMe
         ? BorderRadius.only(
             topLeft: const Radius.circular(18.0),
@@ -475,46 +525,52 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: isMe
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
-        children: [
-          // Telegram Sticky/Sliding Avatar
-          if (!isMe) ...[
-            const SizedBox(width: 8),
-            SizedBox(
-              width: 42,
-              child: Transform.translate(
-                offset: Offset(0, _avatarOffset),
-                child: _buildAvatar(context),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: isMe
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            // Sticky/Sliding Avatar
+            if (!isMe) ...[
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 42,
+                height: double.infinity,
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: Transform.translate(
+                    offset: Offset(0, _avatarOffset),
+                    child: _buildAvatar(context),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+
+            // Column of clustered message bubbles
+            Flexible(
+              child: Column(
+                crossAxisAlignment: isMe
+                    ? CrossAxisAlignment.end
+                    : CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (int i = 0; i < widget.cluster.messages.length; i++)
+                    _buildBubble(
+                      context,
+                      widget.cluster.messages[i],
+                      i,
+                      widget.cluster.messages.length,
+                    ),
+                ],
               ),
             ),
-            const SizedBox(width: 8),
+
+            if (isMe) const SizedBox(width: 8),
           ],
-
-          // Column of clustered message bubbles
-          Flexible(
-            child: Column(
-              crossAxisAlignment: isMe
-                  ? CrossAxisAlignment.end
-                  : CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (int i = 0; i < widget.cluster.messages.length; i++)
-                  _buildBubble(
-                    context,
-                    widget.cluster.messages[i],
-                    i,
-                    widget.cluster.messages.length,
-                  ),
-              ],
-            ),
-          ),
-
-          if (isMe) const SizedBox(width: 8),
-        ],
+        ),
       ),
     );
   }
