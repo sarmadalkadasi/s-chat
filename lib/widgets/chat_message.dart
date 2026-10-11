@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:intl/intl.dart';
-import 'package:s_chat/widgets/message_bubble.dart';
+import 'package:s_chat/widgets/show_image_viewer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class MessageCluster {
@@ -376,7 +376,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       child: InkWell(
         borderRadius: BorderRadius.circular(100),
         onTap: () {
-          showProfileImageViewer(context, imageUrl: userImage, username: uname);
+          showImageViewer(context, imageUrl: userImage, title: uname,);
         },
         child: Hero(
           tag: userImage.isNotEmpty
