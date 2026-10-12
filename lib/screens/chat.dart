@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/widgets/chat_message.dart';
 import 'package:s_chat/widgets/new_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -14,6 +15,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
   final ValueNotifier<EditingMessage?> _editingNotifier =
       ValueNotifier<EditingMessage?>(null);
+  final ValueNotifier<ReplyingMessage?> _replyingNotifier =
+      ValueNotifier<ReplyingMessage?>(null);
+
   bool _canJump = false;
 
   static const double _jumpButtonThreshold = 200;
@@ -29,6 +33,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _editingNotifier.dispose();
+    _replyingNotifier.dispose();
     super.dispose();
   }
 
@@ -100,9 +105,13 @@ class _ChatScreenState extends State<ChatScreen> {
               child: ChatMessages(
                 scrollController: _scrollController,
                 editingNotifier: _editingNotifier,
+                replyingNotifier: _replyingNotifier,
               ),
             ),
-            NewMessage(editingNotifier: _editingNotifier),
+            NewMessage(
+              editingNotifier: _editingNotifier,
+              replyingNotifier: _replyingNotifier,
+            ),
           ],
         ),
       ),

@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:s_chat/models/menu_item.dart';
+import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/widgets/context_menu.dart';
 import 'package:s_chat/widgets/new_message.dart';
+import 'package:s_chat/widgets/reply_preview_widget.dart';
 import 'package:s_chat/widgets/show_image_viewer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -29,10 +32,12 @@ class ChatMessages extends StatefulWidget {
     super.key,
     required this.scrollController,
     this.editingNotifier,
+    this.replyingNotifier,
   });
 
   final ScrollController scrollController;
   final ValueNotifier<EditingMessage?>? editingNotifier;
+  final ValueNotifier<ReplyingMessage?>? replyingNotifier;
 
   @override
   State<ChatMessages> createState() => _ChatMessagesState();
@@ -44,7 +49,12 @@ class _ChatMessagesState extends State<ChatMessages> {
   int _lastMessageCount = 0;
   bool _hasInitialScrolled = false;
 
-  // Local set of message IDs hidden locally by user (for received messages deleted locally)
+  // Highlight & scroll tracking for replied messages
+  String? _highlightedMessageId;
+  Timer? _highlightTimer;
+  final Map<String, GlobalKey> _messageKeys = {};
+
+  // Local set of message IDs hidden locally by user
   final Set<String> _hiddenMessageIds = {};
 
   // Single persistent stream to prevent reload on scroll or rebuild
@@ -57,7 +67,6 @@ class _ChatMessagesState extends State<ChatMessages> {
   void _onScroll() {
     if (!widget.scrollController.hasClients) return;
     final position = widget.scrollController.position;
-    // With top-to-bottom list, maxScrollExtent is the bottom and 0 is the top.
     final distanceFromBottom = position.maxScrollExtent - position.pixels;
     _isAtBottom = distanceFromBottom <= _atBottomThreshold;
   }
@@ -65,7 +74,6 @@ class _ChatMessagesState extends State<ChatMessages> {
   @override
   void initState() {
     super.initState();
-    // Chronological order: oldest at top, newest at bottom
     _messagesStream = Supabase.instance.client
         .from('chat_messages')
         .stream(primaryKey: ['id'])
@@ -76,6 +84,7 @@ class _ChatMessagesState extends State<ChatMessages> {
 
   @override
   void dispose() {
+    _highlightTimer?.cancel();
     widget.scrollController.removeListener(_onScroll);
     super.dispose();
   }
@@ -139,7 +148,6 @@ class _ChatMessagesState extends State<ChatMessages> {
     if (!widget.scrollController.hasClients || chatDocs.isEmpty) return;
     final messageCount = chatDocs.length;
 
-    // 1. Initial open: guarantee jumping to the bottom to show the last message
     if (!_hasInitialScrolled) {
       _scrollToBottom(animate: false);
       _hasInitialScrolled = true;
@@ -147,10 +155,8 @@ class _ChatMessagesState extends State<ChatMessages> {
       return;
     }
 
-    // 2. When a new message arrives:
     if (messageCount > _lastMessageCount) {
       final isLastFromMe = chatDocs.last['user_id'] == currentUserId;
-      // Scroll to bottom if I sent a new message OR if user was already at the bottom
       if (_isAtBottom || isLastFromMe) {
         _scrollToBottom(animate: true);
       }
@@ -218,7 +224,6 @@ class _ChatMessagesState extends State<ChatMessages> {
           cachedProfile?['image_url'] ??
           '';
 
-      // Group consecutive messages by sender
       if (clusters.isNotEmpty && clusters.last.userId == userId) {
         clusters.last.messages.add(doc);
       } else {
@@ -234,6 +239,78 @@ class _ChatMessagesState extends State<ChatMessages> {
       }
     }
     return clusters;
+  }
+
+  void _scrollToAndHighlightMessage(
+    dynamic targetId,
+    List<MessageCluster> clusters,
+  ) {
+    if (targetId == null) return;
+    final targetStr = targetId.toString();
+
+    // 1. Highlight target message
+    _highlightTimer?.cancel();
+    setState(() {
+      _highlightedMessageId = targetStr;
+    });
+
+    _highlightTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) {
+        setState(() {
+          _highlightedMessageId = null;
+        });
+      }
+    });
+
+    // 2. Check if element key exists and is attached
+    final key = _messageKeys[targetStr];
+    if (key != null && key.currentContext != null) {
+      Scrollable.ensureVisible(
+        key.currentContext!,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCubic,
+        alignment: 0.5,
+      );
+      return;
+    }
+
+    // 3. Fallback: Estimate position and scroll
+    int targetClusterIndex = -1;
+    for (int i = 0; i < clusters.length; i++) {
+      for (final msg in clusters[i].messages) {
+        if (msg['id']?.toString() == targetStr) {
+          targetClusterIndex = i;
+          break;
+        }
+      }
+      if (targetClusterIndex != -1) break;
+    }
+
+    if (targetClusterIndex != -1 && widget.scrollController.hasClients) {
+      final double maxExtent = widget.scrollController.position.maxScrollExtent;
+      final double estimatedOffset =
+          (targetClusterIndex / clusters.length) * maxExtent;
+      widget.scrollController.animateTo(
+        estimatedOffset.clamp(0.0, maxExtent),
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
+
+      // Retry ensureVisible after scroll
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 350), () {
+          final retryKey = _messageKeys[targetStr];
+          if (mounted && retryKey != null && retryKey.currentContext != null) {
+            Scrollable.ensureVisible(
+              retryKey.currentContext!,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              alignment: 0.5,
+            );
+          }
+        });
+      });
+    }
   }
 
   @override
@@ -273,10 +350,16 @@ class _ChatMessagesState extends State<ChatMessages> {
               cluster: cluster,
               scrollController: widget.scrollController,
               editingNotifier: widget.editingNotifier,
+              replyingNotifier: widget.replyingNotifier,
+              highlightedMessageId: _highlightedMessageId,
+              messageKeys: _messageKeys,
               onHideMessageLocally: (id) {
                 setState(() {
                   _hiddenMessageIds.add(id);
                 });
+              },
+              onTapReplyPreview: (targetId) {
+                _scrollToAndHighlightMessage(targetId, clusters);
               },
             );
           },
@@ -292,13 +375,21 @@ class MessageClusterWidget extends StatefulWidget {
     required this.cluster,
     required this.scrollController,
     this.editingNotifier,
+    this.replyingNotifier,
+    this.highlightedMessageId,
+    required this.messageKeys,
     this.onHideMessageLocally,
+    this.onTapReplyPreview,
   });
 
   final MessageCluster cluster;
   final ScrollController scrollController;
   final ValueNotifier<EditingMessage?>? editingNotifier;
+  final ValueNotifier<ReplyingMessage?>? replyingNotifier;
+  final String? highlightedMessageId;
+  final Map<String, GlobalKey> messageKeys;
   final void Function(String messageId)? onHideMessageLocally;
+  final void Function(dynamic targetMessageId)? onTapReplyPreview;
 
   @override
   State<MessageClusterWidget> createState() => _MessageClusterWidgetState();
@@ -460,8 +551,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     Map<String, dynamic> messageDoc,
     int index,
     int totalCount,
-  )
-  {
+  ) {
     final isMe = widget.cluster.isMe;
     final isFirst = (index == 0);
     final isLast = (index == totalCount - 1);
@@ -471,6 +561,16 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     final dynamic rawId = messageDoc['id'];
     final String messageIdStr = rawId?.toString() ?? '';
     final rawTimestamp = messageDoc['created_at'] ?? messageDoc['createdAt'];
+
+    final String? replyToUsername = messageDoc['reply_to_username'];
+    final String? replyToText = messageDoc['reply_to_text'];
+    final dynamic replyToId = messageDoc['reply_to_id'];
+
+    final isHighlighted = (messageIdStr == widget.highlightedMessageId);
+    final bubbleKey = widget.messageKeys.putIfAbsent(
+      messageIdStr,
+      () => GlobalKey(),
+    );
 
     String formattedTime = '';
     if (rawTimestamp != null) {
@@ -501,6 +601,18 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     }
 
     final List<MenuItem> menuItems = [
+      MenuItem(
+        id: 'reply',
+        title: 'Reply',
+        icon: Icons.reply_rounded,
+        onTap: () {
+          widget.replyingNotifier?.value = ReplyingMessage(
+            id: rawId,
+            username: widget.cluster.username,
+            text: messageText,
+          );
+        },
+      ),
       MenuItem(
         id: 'copy',
         title: 'Copy',
@@ -633,24 +745,38 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
             bottomLeft: Radius.circular(isLast || isSingle ? 4.0 : 4.0),
           );
 
+    final hasReply = replyToText != null && replyToText.isNotEmpty;
+
     return ContextMenu(
       items: menuItems,
       showOnTap: true,
-      child: Container(
+      child: AnimatedContainer(
+        key: bubbleKey,
+        duration: const Duration(milliseconds: 300),
         margin: const EdgeInsets.symmetric(vertical: 2.0),
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.72,
         ),
         padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
         decoration: BoxDecoration(
-          color: isMe
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.secondaryContainer,
+          color: isHighlighted
+              ? (isMe
+                  ? Theme.of(context).colorScheme.primary.withAlpha(220)
+                  : Theme.of(context).colorScheme.tertiaryContainer)
+              : (isMe
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.secondaryContainer),
           borderRadius: borderRadius,
+          border: isHighlighted
+              ? Border.all(color: Colors.yellow.shade600, width: 2.0)
+              : null,
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withAlpha(20),
-              blurRadius: 3.0,
+              color: isHighlighted
+                  ? Colors.yellow.shade500.withAlpha(180)
+                  : Colors.black.withAlpha(20),
+              blurRadius: isHighlighted ? 12.0 : 3.0,
+              spreadRadius: isHighlighted ? 2.0 : 0.0,
               offset: const Offset(0, 1),
             ),
           ],
@@ -671,6 +797,18 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
               ),
               const SizedBox(height: 3),
             ],
+
+            // Reply Preview Snippet inside message bubble
+            if (hasReply)
+              ReplyPreviewWidget(
+                username: replyToUsername ?? 'Reply',
+                text: replyToText,
+                isMe: isMe,
+                onTap: replyToId != null
+                    ? () => widget.onTapReplyPreview?.call(replyToId)
+                    : null,
+              ),
+
             Text(
               messageText,
               softWrap: true,

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:s_chat/models/replying_message.dart';
+import 'package:s_chat/widgets/reply_preview_widget.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class EditingMessage {
@@ -9,9 +11,14 @@ class EditingMessage {
 }
 
 class NewMessage extends StatefulWidget {
-  const NewMessage({super.key, this.editingNotifier});
+  const NewMessage({
+    super.key,
+    this.editingNotifier,
+    this.replyingNotifier,
+  });
 
   final ValueNotifier<EditingMessage?>? editingNotifier;
+  final ValueNotifier<ReplyingMessage?>? replyingNotifier;
 
   @override
   State<NewMessage> createState() => _NewMessageState();
@@ -25,6 +32,7 @@ class _NewMessageState extends State<NewMessage> {
   void initState() {
     super.initState();
     widget.editingNotifier?.addListener(_onEditingChanged);
+    widget.replyingNotifier?.addListener(_onReplyingChanged);
   }
 
   @override
@@ -34,11 +42,16 @@ class _NewMessageState extends State<NewMessage> {
       oldWidget.editingNotifier?.removeListener(_onEditingChanged);
       widget.editingNotifier?.addListener(_onEditingChanged);
     }
+    if (oldWidget.replyingNotifier != widget.replyingNotifier) {
+      oldWidget.replyingNotifier?.removeListener(_onReplyingChanged);
+      widget.replyingNotifier?.addListener(_onReplyingChanged);
+    }
   }
 
   @override
   void dispose() {
     widget.editingNotifier?.removeListener(_onEditingChanged);
+    widget.replyingNotifier?.removeListener(_onReplyingChanged);
     _messageController.dispose();
     super.dispose();
   }
@@ -46,6 +59,7 @@ class _NewMessageState extends State<NewMessage> {
   void _onEditingChanged() {
     final editing = widget.editingNotifier?.value;
     if (editing != null) {
+      widget.replyingNotifier?.value = null; // Mutual exclusion
       _messageController.text = editing.text;
       _messageController.selection = TextSelection.fromPosition(
         TextPosition(offset: editing.text.length),
@@ -53,7 +67,7 @@ class _NewMessageState extends State<NewMessage> {
       setState(() {
         _isWriting = editing.text.trim().isNotEmpty;
       });
-    } else {
+    } else if (widget.replyingNotifier?.value == null) {
       _messageController.clear();
       setState(() {
         _isWriting = false;
@@ -61,8 +75,22 @@ class _NewMessageState extends State<NewMessage> {
     }
   }
 
+  void _onReplyingChanged() {
+    final replying = widget.replyingNotifier?.value;
+    if (replying != null) {
+      widget.editingNotifier?.value = null; // Mutual exclusion
+      setState(() {});
+    } else {
+      setState(() {});
+    }
+  }
+
   void _cancelEditing() {
     widget.editingNotifier?.value = null;
+  }
+
+  void _cancelReply() {
+    widget.replyingNotifier?.value = null;
   }
 
   void _sendMessage() async {
@@ -73,6 +101,7 @@ class _NewMessageState extends State<NewMessage> {
     }
 
     final editing = widget.editingNotifier?.value;
+    final replying = widget.replyingNotifier?.value;
 
     FocusScope.of(context).unfocus();
     _messageController.clear();
@@ -85,6 +114,7 @@ class _NewMessageState extends State<NewMessage> {
         cleanCheck.contains(r'$super_clean#') ||
         cleanCheck.contains(r'$super_cleaning#')) {
       widget.editingNotifier?.value = null;
+      widget.replyingNotifier?.value = null;
       try {
         await Supabase.instance.client
             .from('chat_messages')
@@ -126,7 +156,12 @@ class _NewMessageState extends State<NewMessage> {
       return;
     }
 
-    // --- NORMAL NEW MESSAGE INSERT ---
+    // Reset replying state
+    if (replying != null) {
+      widget.replyingNotifier?.value = null;
+    }
+
+    // --- NORMAL NEW MESSAGE INSERT WITH OPTIONAL REPLY METADATA ---
     final currentUser = Supabase.instance.client.auth.currentUser;
     if (currentUser == null) {
       return;
@@ -153,18 +188,27 @@ class _NewMessageState extends State<NewMessage> {
 
     if (username.isEmpty) username = 'User';
 
-    await Supabase.instance.client.from('chat_messages').insert({
+    final Map<String, dynamic> insertData = {
       'user_id': currentUser.id,
       'text': enteredMessage,
       'username': username,
       'user_image': userImage,
       'created_at': DateTime.now().toUtc().toIso8601String(),
-    });
+    };
+
+    if (replying != null) {
+      insertData['reply_to_id'] = replying.id;
+      insertData['reply_to_username'] = replying.username;
+      insertData['reply_to_text'] = replying.text;
+    }
+
+    await Supabase.instance.client.from('chat_messages').insert(insertData);
   }
 
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.editingNotifier?.value != null;
+    final replying = widget.replyingNotifier?.value;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -210,6 +254,18 @@ class _NewMessageState extends State<NewMessage> {
               ],
             ),
           ),
+
+        // Replying Banner
+        if (!isEditing && replying != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+            child: ReplyPreviewWidget(
+              username: replying.username,
+              text: replying.text,
+              onCancel: _cancelReply,
+            ),
+          ),
+
         Padding(
           padding: const EdgeInsets.all(8.0),
           child: Row(
@@ -231,7 +287,9 @@ class _NewMessageState extends State<NewMessage> {
                   textCapitalization: TextCapitalization.sentences,
                   decoration: InputDecoration(
                     filled: true,
-                    hintText: isEditing ? 'Edit message...' : 'Message...',
+                    hintText: isEditing
+                        ? 'Edit message...'
+                        : (replying != null ? 'Reply...' : 'Message...'),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(16),
                       borderSide: BorderSide.none,
