@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:s_chat/models/menu_item.dart';
+import 'package:s_chat/widgets/context_menu.dart';
 import 'package:s_chat/widgets/new_message.dart';
 import 'package:s_chat/widgets/show_image_viewer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -453,15 +455,35 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     );
   }
 
-  void _showMessageOptionsMenu(
-    BuildContext context, {
-    required Map<String, dynamic> messageDoc,
-    required String messageText,
-    required dynamic rawTimestamp,
-    required bool isMe,
-  }) {
+  Widget _buildBubble(
+    BuildContext context,
+    Map<String, dynamic> messageDoc,
+    int index,
+    int totalCount,
+  )
+  {
+    final isMe = widget.cluster.isMe;
+    final isFirst = (index == 0);
+    final isLast = (index == totalCount - 1);
+    final isSingle = (totalCount == 1);
+
+    final messageText = messageDoc['text'] ?? '';
     final dynamic rawId = messageDoc['id'];
     final String messageIdStr = rawId?.toString() ?? '';
+    final rawTimestamp = messageDoc['created_at'] ?? messageDoc['createdAt'];
+
+    String formattedTime = '';
+    if (rawTimestamp != null) {
+      DateTime? dateTime;
+      if (rawTimestamp is DateTime) {
+        dateTime = rawTimestamp;
+      } else if (rawTimestamp is String) {
+        dateTime = DateTime.tryParse(rawTimestamp);
+      }
+      if (dateTime != null) {
+        formattedTime = DateFormat('h:mm a').format(dateTime.toLocal());
+      }
+    }
 
     // Check if message was sent within last 1 hour (60 minutes)
     bool canEdit = false;
@@ -478,118 +500,123 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       }
     }
 
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 36,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade400,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.copy_rounded),
-                  title: const Text('Copy Text'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    Clipboard.setData(ClipboardData(text: messageText));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Message copied to clipboard'),
-                        duration: Duration(seconds: 2),
-                      ),
-                    );
-                  },
-                ),
-                if (canEdit)
-                  ListTile(
-                    leading: const Icon(Icons.edit_rounded, color: Colors.blue),
-                    title: const Text('Edit Message'),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      widget.editingNotifier?.value = EditingMessage(
-                        id: rawId,
-                        text: messageText,
-                      );
-                    },
-                  ),
-                ListTile(
-                  leading: const Icon(
-                    Icons.delete_outline_rounded,
-                    color: Colors.red,
-                  ),
-                  title: Text(
-                    isMe ? 'Delete for everyone' : 'Delete for me',
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    // Instantly hide message locally for immediate UI response
-                    widget.onHideMessageLocally?.call(messageIdStr);
-
-                    if (isMe && rawId != null) {
-                      try {
-                        await Supabase.instance.client
-                            .from('chat_messages')
-                            .delete()
-                            .eq('id', rawId);
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Failed to delete message: $e'),
-                            ),
-                          );
-                        }
-                      }
-                    }
-                  },
-                ),
-              ],
+    final List<MenuItem> menuItems = [
+      MenuItem(
+        id: 'copy',
+        title: 'Copy',
+        icon: Icons.copy_rounded,
+        onTap: () {
+          FocusManager.instance.primaryFocus?.unfocus();
+          Clipboard.setData(ClipboardData(text: messageText));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Message copied to clipboard',
+                textAlign: TextAlign.center,
+              ),
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
             ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildBubble(
-    BuildContext context,
-    Map<String, dynamic> messageDoc,
-    int index,
-    int totalCount,
-  ) {
-    final isMe = widget.cluster.isMe;
-    final isFirst = (index == 0);
-    final isLast = (index == totalCount - 1);
-    final isSingle = (totalCount == 1);
-
-    final messageText = messageDoc['text'] ?? '';
-    final rawTimestamp = messageDoc['created_at'] ?? messageDoc['createdAt'];
-    String formattedTime = '';
-    if (rawTimestamp != null) {
-      DateTime? dateTime;
-      if (rawTimestamp is DateTime) {
-        dateTime = rawTimestamp;
-      } else if (rawTimestamp is String) {
-        dateTime = DateTime.tryParse(rawTimestamp);
-      }
-      if (dateTime != null) {
-        formattedTime = DateFormat('h:mm a').format(dateTime.toLocal());
-      }
-    }
+          );
+        },
+      ),
+      if (canEdit)
+        MenuItem(
+          id: 'edit',
+          title: 'Edit',
+          icon: Icons.edit_rounded,
+          onTap: () {
+            widget.editingNotifier?.value = EditingMessage(
+              id: rawId,
+              text: messageText,
+            );
+          },
+        ),
+      MenuItem(
+        id: 'delete',
+        title: 'Delete',
+        icon: Icons.delete_outline_rounded,
+        isDestructive: true,
+        onTap: () {
+          bool isDeleteForOthers = false;
+          showDialog(
+            context: context,
+            builder: (context) {
+              return StatefulBuilder(
+                builder: (context, setDialogState) {
+                  return AlertDialog(
+                    title: const Text('Delete Message'),
+                    content: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Do you really want to delete this message?'),
+                        if (isMe) ...[
+                          const SizedBox(height: 8),
+                          CheckboxListTile(
+                            contentPadding:
+                                const EdgeInsets.symmetric(horizontal: 6),
+                            value: isDeleteForOthers,
+                            title: Text(
+                              'Delete it for others, too',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium!
+                                  .copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            ),
+                            onChanged: (value) {
+                              setDialogState(() {
+                                isDeleteForOthers = value ?? false;
+                              });
+                            },
+                          ),
+                        ],
+                      ],
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          widget.onHideMessageLocally?.call(messageIdStr);
+                          if (isMe && rawId != null && isDeleteForOthers) {
+                            try {
+                              await Supabase.instance.client
+                                  .from('chat_messages')
+                                  .delete()
+                                  .eq('id', rawId);
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Failed to delete message: $e',
+                                    ),
+                                  ),
+                                );
+                              }
+                            }
+                          }
+                        },
+                        child: const Text(
+                          'Delete',
+                          style: TextStyle(color: Colors.redAccent),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          );
+        },
+      ),
+    ];
 
     // Modern-style cluster corner radius
     final borderRadius = isMe
@@ -606,17 +633,9 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
             bottomLeft: Radius.circular(isLast || isSingle ? 4.0 : 4.0),
           );
 
-    return InkWell(
-      borderRadius: borderRadius,
-      onLongPress: () {
-        _showMessageOptionsMenu(
-          context,
-          messageDoc: messageDoc,
-          messageText: messageText,
-          rawTimestamp: rawTimestamp,
-          isMe: isMe,
-        );
-      },
+    return ContextMenu(
+      items: menuItems,
+      showOnTap: true,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 2.0),
         constraints: BoxConstraints(
