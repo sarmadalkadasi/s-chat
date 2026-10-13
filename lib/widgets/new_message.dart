@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/services/profile_cache_service.dart';
-import 'package:s_chat/widgets/reply_preview_widget.dart';
+import 'package:s_chat/utils/text_formatting_utils.dart';
+import 'package:s_chat/widgets/reply_preview.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class EditingMessage {
@@ -13,11 +14,7 @@ class EditingMessage {
 }
 
 class NewMessage extends StatefulWidget {
-  const NewMessage({
-    super.key,
-    this.editingNotifier,
-    this.replyingNotifier,
-  });
+  const NewMessage({super.key, this.editingNotifier, this.replyingNotifier});
 
   final ValueNotifier<EditingMessage?>? editingNotifier;
   final ValueNotifier<ReplyingMessage?>? replyingNotifier;
@@ -27,7 +24,7 @@ class NewMessage extends StatefulWidget {
 }
 
 class _NewMessageState extends State<NewMessage> {
-  final _messageController = TextEditingController();
+  final _messageController = BiDiTextEditingController();
   bool _isWriting = false;
 
   @override
@@ -87,6 +84,15 @@ class _NewMessageState extends State<NewMessage> {
     }
   }
 
+  void _onTextChanged(String text) {
+    final isWriting = _messageController.cleanText.isNotEmpty;
+    if (_isWriting != isWriting) {
+      setState(() {
+        _isWriting = isWriting;
+      });
+    }
+  }
+
   void _cancelEditing() {
     widget.editingNotifier?.value = null;
   }
@@ -96,7 +102,7 @@ class _NewMessageState extends State<NewMessage> {
   }
 
   void _sendMessage() async {
-    final enteredMessage = _messageController.text.trim();
+    final enteredMessage = _messageController.cleanText;
 
     if (enteredMessage.isEmpty) {
       return;
@@ -107,7 +113,9 @@ class _NewMessageState extends State<NewMessage> {
 
     FocusScope.of(context).unfocus();
     _messageController.clear();
-    setState(() => _isWriting = false);
+    setState(() {
+      _isWriting = false;
+    });
 
     // --- SUPER CLEANING COMMAND CHECK ---
     final cleanCheck = enteredMessage.trim().toLowerCase();
@@ -132,9 +140,9 @@ class _NewMessageState extends State<NewMessage> {
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Super Cleaning failed: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Super Cleaning failed: $e')));
         }
       }
       return;
@@ -157,7 +165,8 @@ class _NewMessageState extends State<NewMessage> {
 
     // --- OPTIMISTIC NEW MESSAGE INSERT (0ms UI Update & Offline Session Recovery) ---
     final currentUser = Supabase.instance.client.auth.currentUser;
-    final cachedSession = await MessageRepository.instance.getCachedUserSession();
+    final cachedSession = await MessageRepository.instance
+        .getCachedUserSession();
 
     String userId = currentUser?.id ?? cachedSession?['user_id'] ?? '';
     String username = cachedSession?['username'] ?? '';
@@ -251,7 +260,10 @@ class _NewMessageState extends State<NewMessage> {
         // Replying Banner
         if (!isEditing && replying != null)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12.0,
+              vertical: 4.0,
+            ),
             child: ReplyPreviewWidget(
               username: replying.username,
               text: replying.text,
@@ -278,6 +290,13 @@ class _NewMessageState extends State<NewMessage> {
                   controller: _messageController,
                   keyboardType: TextInputType.multiline,
                   textCapitalization: TextCapitalization.sentences,
+                  contextMenuBuilder: (context, editableTextState) {
+                    return TextFormattingUtils.buildFormattingContextMenu(
+                      context,
+                      editableTextState,
+                      _messageController,
+                    );
+                  },
                   decoration: InputDecoration(
                     filled: true,
                     hintText: isEditing
@@ -292,8 +311,7 @@ class _NewMessageState extends State<NewMessage> {
                       vertical: 8,
                     ),
                   ),
-                  onChanged: (meg) =>
-                      setState(() => _isWriting = meg.trim().isNotEmpty),
+                  onChanged: _onTextChanged,
                 ),
               ),
               const SizedBox(width: 8),

@@ -84,6 +84,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   isOnline ? 'Online' : 'Connecting...',
                   style: TextStyle(
                     fontSize: 12,
+                    fontFamily: 'Audiowide',
                     color: isOnline ? Colors.teal : Colors.orange,
                   ),
                 );
