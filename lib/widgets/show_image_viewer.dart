@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:s_chat/widgets/cached_media_image.dart';
 
 void showImageViewer(
-    BuildContext context, {
-      required String imageUrl,
-      required String title,
-    }) {
+  BuildContext context, {
+  required String imageUrl,
+  required String title,
+}) {
   showDialog(
     context: context,
     barrierColor: Colors.black.withAlpha(210),
@@ -18,7 +19,7 @@ void showImageViewer(
             // Top Bar with username and close button
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: Colors.black54,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
               ),
@@ -43,44 +44,46 @@ void showImageViewer(
             const SizedBox(height: 12),
             // Profile image card with Hero animation
             Hero(
-              tag: imageUrl.isNotEmpty ? 'bubble_avatar_$imageUrl' : UniqueKey().toString(),
+              tag: imageUrl.isNotEmpty
+                  ? 'bubble_avatar_$imageUrl'
+                  : UniqueKey().toString(),
               child: ClipRRect(
-                borderRadius: BorderRadius.vertical(bottom: Radius.circular(24)),
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(24),
+                ),
                 child: Container(
                   width: 340,
                   height: 340,
                   color: Theme.of(context).colorScheme.primaryContainer,
                   child: imageUrl.isNotEmpty
-                      ? Image.network(
-                    imageUrl,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => Center(
-                      child: Text(
-                        title.isNotEmpty ? title[0].toUpperCase() : '?',
-                        style: TextStyle(
-                          fontSize: 72,
-                          fontWeight: FontWeight.bold,
-                          color: Theme.of(context).colorScheme.onPrimaryContainer,
-                        ),
-                      ),
-                    ),
-                    loadingBuilder: (context, child, progress) {
-                      if (progress == null) return child;
-                      return const Center(
-                        child: CircularProgressIndicator(),
-                      );
-                    },
-                  )
+                      ? CachedMediaImage(
+                          imageUrl: imageUrl,
+                          fit: BoxFit.cover,
+                          errorWidget: Center(
+                            child: Text(
+                              title.isNotEmpty ? title[0].toUpperCase() : '?',
+                              style: TextStyle(
+                                fontSize: 72,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onPrimaryContainer,
+                              ),
+                            ),
+                          ),
+                        )
                       : Center(
-                    child: Text(
-                      title.isNotEmpty ? title[0].toUpperCase() : '?',
-                      style: TextStyle(
-                        fontSize: 72,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
-                      ),
-                    ),
-                  ),
+                          child: Text(
+                            title.isNotEmpty ? title[0].toUpperCase() : '?',
+                            style: TextStyle(
+                              fontSize: 72,
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onPrimaryContainer,
+                            ),
+                          ),
+                        ),
                 ),
               ),
             ),

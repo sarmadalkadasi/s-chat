@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:s_chat/s_chat.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
+import 'package:s_chat/services/message_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'firebase_options.dart';
 
@@ -15,6 +16,9 @@ void main() async {
   );
   // Initialize notifications
   await LocalNotificationManager.initialize();
+
+  // Pre-load offline messages and outbox before UI renders
+  await MessageRepository.instance.init();
 
   // Start watching for incoming messages
   listenToIncomingMessages();

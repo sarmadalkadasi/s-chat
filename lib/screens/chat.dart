@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/replying_message.dart';
+import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/widgets/chat_message.dart';
 import 'package:s_chat/widgets/new_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -40,7 +41,6 @@ class _ChatScreenState extends State<ChatScreen> {
   void _onScroll() {
     if (!_scrollController.hasClients) return;
     final position = _scrollController.position;
-    // In top-to-bottom list, maxScrollExtent is the bottom and 0 is the top.
     final distanceFromBottom = position.maxScrollExtent - position.pixels;
     final shouldShow = distanceFromBottom > _jumpButtonThreshold;
     if (shouldShow != _canJump) {
@@ -65,12 +65,31 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          'S Chat',
-          style: Theme.of(context).textTheme.titleLarge!.copyWith(
-            fontFamily: 'Audiowide',
-            fontStyle: FontStyle.italic,
-          ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'S Chat',
+              style: Theme.of(context).textTheme.titleLarge!.copyWith(
+                fontFamily: 'Audiowide',
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+            StreamBuilder<bool>(
+              stream: MessageRepository.instance.isOnlineStream,
+              initialData: MessageRepository.instance.isOnline,
+              builder: (context, snapshot) {
+                final isOnline = snapshot.data ?? true;
+                return Text(
+                  isOnline ? 'Online' : 'Connecting...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isOnline ? Colors.teal : Colors.orange,
+                  ),
+                );
+              },
+            ),
+          ],
         ),
         actions: [
           IconButton(

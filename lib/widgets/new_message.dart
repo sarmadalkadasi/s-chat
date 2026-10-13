@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/replying_message.dart';
+import 'package:s_chat/services/message_repository.dart';
+import 'package:s_chat/services/profile_cache_service.dart';
 import 'package:s_chat/widgets/reply_preview_widget.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -138,21 +140,13 @@ class _NewMessageState extends State<NewMessage> {
       return;
     }
 
-    // --- EDITING EXISTING MESSAGE ---
+    // --- OPTIMISTIC EDITING EXISTING MESSAGE (0ms UI Update) ---
     if (editing != null) {
       widget.editingNotifier?.value = null;
-      try {
-        await Supabase.instance.client
-            .from('chat_messages')
-            .update({'text': enteredMessage})
-            .eq('id', editing.id);
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to update message: $e')),
-          );
-        }
-      }
+      MessageRepository.instance.editOptimisticMessage(
+        id: editing.id,
+        newText: enteredMessage,
+      );
       return;
     }
 
@@ -161,48 +155,47 @@ class _NewMessageState extends State<NewMessage> {
       widget.replyingNotifier?.value = null;
     }
 
-    // --- NORMAL NEW MESSAGE INSERT WITH OPTIONAL REPLY METADATA ---
+    // --- OPTIMISTIC NEW MESSAGE INSERT (0ms UI Update & Offline Session Recovery) ---
     final currentUser = Supabase.instance.client.auth.currentUser;
-    if (currentUser == null) {
-      return;
-    }
+    final cachedSession = await MessageRepository.instance.getCachedUserSession();
 
-    final metadata = currentUser.userMetadata;
-    String username = metadata?['username'] ?? '';
-    String userImage = metadata?['image_url'] ?? '';
+    String userId = currentUser?.id ?? cachedSession?['user_id'] ?? '';
+    String username = cachedSession?['username'] ?? '';
+    String userImage = cachedSession?['user_image'] ?? '';
 
-    // If metadata doesn't have the avatar, check users table
-    if (username.isEmpty || userImage.isEmpty) {
-      try {
-        final profile = await Supabase.instance.client
-            .from('users')
-            .select('username, image_url')
-            .eq('id', currentUser.id)
-            .maybeSingle();
+    if (currentUser != null && (username.isEmpty || userImage.isEmpty)) {
+      final metadata = currentUser.userMetadata;
+      if (username.isEmpty) username = metadata?['username'] ?? '';
+      if (userImage.isEmpty) userImage = metadata?['image_url'] ?? '';
+
+      if (username.isEmpty || userImage.isEmpty) {
+        final profile = ProfileCacheService.instance.getCached(currentUser.id);
         if (profile != null) {
           if (username.isEmpty) username = profile['username'] ?? 'User';
           if (userImage.isEmpty) userImage = profile['image_url'] ?? '';
         }
-      } catch (_) {}
+      }
     }
 
     if (username.isEmpty) username = 'User';
+    if (userId.isEmpty) userId = 'guest_user';
 
-    final Map<String, dynamic> insertData = {
-      'user_id': currentUser.id,
-      'text': enteredMessage,
-      'username': username,
-      'user_image': userImage,
-      'created_at': DateTime.now().toUtc().toIso8601String(),
-    };
+    // Persist session to disk for future offline sends
+    MessageRepository.instance.saveUserSession(
+      userId: userId,
+      username: username,
+      userImage: userImage,
+    );
 
-    if (replying != null) {
-      insertData['reply_to_id'] = replying.id;
-      insertData['reply_to_username'] = replying.username;
-      insertData['reply_to_text'] = replying.text;
-    }
-
-    await Supabase.instance.client.from('chat_messages').insert(insertData);
+    MessageRepository.instance.sendOptimisticMessage(
+      text: enteredMessage,
+      userId: userId,
+      username: username,
+      userImage: userImage,
+      replyToId: replying?.id,
+      replyToUsername: replying?.username,
+      replyToText: replying?.text,
+    );
   }
 
   @override

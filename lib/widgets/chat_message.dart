@@ -3,8 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/models/menu_item.dart';
 import 'package:s_chat/models/replying_message.dart';
+import 'package:s_chat/services/message_repository.dart';
+import 'package:s_chat/services/profile_cache_service.dart';
+import 'package:s_chat/widgets/cached_media_image.dart';
 import 'package:s_chat/widgets/context_menu.dart';
 import 'package:s_chat/widgets/new_message.dart';
 import 'package:s_chat/widgets/reply_preview_widget.dart';
@@ -16,7 +20,7 @@ class MessageCluster {
   final String username;
   final String userImage;
   final bool isMe;
-  final List<Map<String, dynamic>> messages;
+  final List<ChatMessage> messages;
 
   MessageCluster({
     required this.userId,
@@ -57,27 +61,26 @@ class _ChatMessagesState extends State<ChatMessages> {
   // Local set of message IDs hidden locally by user
   final Set<String> _hiddenMessageIds = {};
 
-  // Single persistent stream to prevent reload on scroll or rebuild
-  late final Stream<List<Map<String, dynamic>>> _messagesStream;
-
-  // Local cache for user profiles
-  final Map<String, Map<String, dynamic>> _profileCache = {};
-  final Set<String> _pendingFetches = {};
+  // Stream listening to offline-first MessageRepository
+  late final Stream<List<ChatMessage>> _messagesStream;
 
   void _onScroll() {
     if (!widget.scrollController.hasClients) return;
     final position = widget.scrollController.position;
     final distanceFromBottom = position.maxScrollExtent - position.pixels;
     _isAtBottom = distanceFromBottom <= _atBottomThreshold;
+
+    // Trigger pagination when scrolling near top of message list
+    if (position.pixels <= 150) {
+      MessageRepository.instance.loadOlderMessages();
+    }
   }
 
   @override
   void initState() {
     super.initState();
-    _messagesStream = Supabase.instance.client
-        .from('chat_messages')
-        .stream(primaryKey: ['id'])
-        .order('created_at', ascending: true);
+    MessageRepository.instance.init();
+    _messagesStream = MessageRepository.instance.messagesStream;
 
     widget.scrollController.addListener(_onScroll);
   }
@@ -89,9 +92,9 @@ class _ChatMessagesState extends State<ChatMessages> {
     super.dispose();
   }
 
-  void _checkSuperCleaning(List<Map<String, dynamic>> chatDocs) async {
+  void _checkSuperCleaning(List<ChatMessage> chatDocs) async {
     for (final doc in chatDocs) {
-      final text = doc['text']?.toString().trim().toLowerCase() ?? '';
+      final text = doc.text.trim().toLowerCase();
       if (text == r'$super_clean#' ||
           text == r'$super_cleaning#' ||
           text.contains(r'$super_clean#') ||
@@ -142,7 +145,7 @@ class _ChatMessagesState extends State<ChatMessages> {
   }
 
   void _handleScroll(
-    List<Map<String, dynamic>> chatDocs,
+    List<ChatMessage> chatDocs,
     String currentUserId,
   ) {
     if (!widget.scrollController.hasClients || chatDocs.isEmpty) return;
@@ -156,7 +159,7 @@ class _ChatMessagesState extends State<ChatMessages> {
     }
 
     if (messageCount > _lastMessageCount) {
-      final isLastFromMe = chatDocs.last['user_id'] == currentUserId;
+      final isLastFromMe = chatDocs.last.userId == currentUserId;
       if (_isAtBottom || isLastFromMe) {
         _scrollToBottom(animate: true);
       }
@@ -166,74 +169,51 @@ class _ChatMessagesState extends State<ChatMessages> {
 
   Map<String, dynamic>? _getProfile(String userId) {
     if (userId.isEmpty) return null;
-    if (_profileCache.containsKey(userId)) {
-      return _profileCache[userId];
+    final cached = ProfileCacheService.instance.getCached(userId);
+    if (cached != null) {
+      return cached;
     }
 
-    if (!_pendingFetches.contains(userId)) {
-      _pendingFetches.add(userId);
-      Supabase.instance.client
-          .from('users')
-          .select('username, image_url')
-          .eq('id', userId)
-          .maybeSingle()
-          .then((data) {
-            if (mounted) {
-              setState(() {
-                _profileCache[userId] =
-                    data ?? {'username': 'Anonymous', 'image_url': ''};
-                _pendingFetches.remove(userId);
-              });
-            }
-          })
-          .catchError((_) {
-            if (mounted) {
-              setState(() {
-                _profileCache[userId] = {
-                  'username': 'Anonymous',
-                  'image_url': '',
-                };
-                _pendingFetches.remove(userId);
-              });
-            }
-          });
-    }
+    ProfileCacheService.instance.getProfile(userId).then((data) {
+      if (mounted && data != null) {
+        setState(() {});
+      }
+    });
     return null;
   }
 
   List<MessageCluster> _groupMessages(
-    List<Map<String, dynamic>> docs,
+    List<ChatMessage> docs,
     String currentUserId,
   ) {
     final List<MessageCluster> clusters = [];
-    for (final doc in docs) {
-      final String id = doc['id']?.toString() ?? '';
-      if (_hiddenMessageIds.contains(id)) continue;
+    for (final message in docs) {
+      final String idStr = message.id?.toString() ?? '';
+      if (_hiddenMessageIds.contains(idStr)) continue;
 
-      final String userId = doc['user_id'] ?? '';
-      final isMe = userId == currentUserId;
-      final cachedProfile =
-          (doc['username'] == null || doc['username'].toString().isEmpty)
-          ? _getProfile(userId)
+      final isMe = message.userId == currentUserId;
+      final cachedProfile = (message.username == 'Anonymous' || message.username.isEmpty)
+          ? _getProfile(message.userId)
           : null;
-      final String username =
-          doc['username'] ?? cachedProfile?['username'] ?? 'Anonymous';
-      final String userImage =
-          doc['user_image'] ??
-          doc['image_url'] ??
-          cachedProfile?['image_url'] ??
-          '';
 
-      if (clusters.isNotEmpty && clusters.last.userId == userId) {
-        clusters.last.messages.add(doc);
+      final String finalUsername = (message.username != 'Anonymous' && message.username.isNotEmpty)
+          ? message.username
+          : (cachedProfile?['username'] ?? 'Anonymous');
+
+      final String finalUserImage = message.userImage.isNotEmpty
+          ? message.userImage
+          : (cachedProfile?['image_url'] ?? '');
+
+      if (clusters.isNotEmpty && clusters.last.userId == message.userId) {
+        clusters.last.messages.add(message);
       } else {
         clusters.add(
           MessageCluster(
-            userId: userId,
-            username: username,
-            userImage: userImage,
+            userId: message.userId,
+            username: finalUsername,
+            userImage: finalUserImage,
             isMe: isMe,
-            messages: [doc],
+            messages: [message],
           ),
         );
       }
@@ -278,7 +258,7 @@ class _ChatMessagesState extends State<ChatMessages> {
     int targetClusterIndex = -1;
     for (int i = 0; i < clusters.length; i++) {
       for (final msg in clusters[i].messages) {
-        if (msg['id']?.toString() == targetStr) {
+        if (msg.id?.toString() == targetStr) {
           targetClusterIndex = i;
           break;
         }
@@ -318,10 +298,12 @@ class _ChatMessagesState extends State<ChatMessages> {
     final authenticatedUserId =
         Supabase.instance.client.auth.currentUser?.id ?? '';
 
-    return StreamBuilder<List<Map<String, dynamic>>>(
+    return StreamBuilder<List<ChatMessage>>(
       stream: _messagesStream,
+      initialData: MessageRepository.instance.currentMessages,
       builder: (ctx, chatSnapshot) {
-        if (chatSnapshot.connectionState == ConnectionState.waiting) {
+        if (chatSnapshot.connectionState == ConnectionState.waiting &&
+            (!chatSnapshot.hasData || chatSnapshot.data!.isEmpty)) {
           return const Center(child: CircularProgressIndicator());
         }
 
@@ -345,7 +327,7 @@ class _ChatMessagesState extends State<ChatMessages> {
             final cluster = clusters[index];
             return MessageClusterWidget(
               key: ValueKey(
-                'cluster_${cluster.userId}_${cluster.messages.first['id']}',
+                'cluster_${cluster.userId}_${cluster.messages.first.id}',
               ),
               cluster: cluster,
               scrollController: widget.scrollController,
@@ -498,7 +480,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     final userImage = widget.cluster.userImage;
     final uname = widget.cluster.username;
     final firstMessageId =
-        widget.cluster.messages.first['id'] ?? UniqueKey().toString();
+        widget.cluster.messages.first.id ?? UniqueKey().toString();
 
     return Container(
       width: 42,
@@ -517,29 +499,45 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
           tag: userImage.isNotEmpty
               ? 'bubble_avatar_$userImage'
               : 'avatar_${widget.cluster.userId}_$firstMessageId',
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              color: Theme.of(context).colorScheme.primaryContainer,
-              image: userImage.isNotEmpty
-                  ? DecorationImage(
-                      image: NetworkImage(userImage),
-                      fit: BoxFit.cover,
-                    )
-                  : null,
-            ),
-            child: userImage.isEmpty
-                ? Center(
-                    child: Text(
-                      uname.isNotEmpty ? uname[0].toUpperCase() : '?',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: userImage.isNotEmpty
+                ? CachedMediaImage(
+                    imageUrl: userImage,
+                    fit: BoxFit.cover,
+                    width: 38,
+                    height: 38,
+                    placeholder: Container(
+                      color: Theme.of(context).colorScheme.primaryContainer,
+                      child: Center(
+                        child: Text(
+                          uname.isNotEmpty ? uname[0].toUpperCase() : '?',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onPrimaryContainer,
+                          ),
+                        ),
                       ),
                     ),
                   )
-                : null,
+                : Container(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    child: Center(
+                      child: Text(
+                        uname.isNotEmpty ? uname[0].toUpperCase() : '?',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                  ),
           ),
         ),
       ),
@@ -548,7 +546,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
 
   Widget _buildBubble(
     BuildContext context,
-    Map<String, dynamic> messageDoc,
+    ChatMessage message,
     int index,
     int totalCount,
   ) {
@@ -557,14 +555,13 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     final isLast = (index == totalCount - 1);
     final isSingle = (totalCount == 1);
 
-    final messageText = messageDoc['text'] ?? '';
-    final dynamic rawId = messageDoc['id'];
+    final messageText = message.text;
+    final rawId = message.id;
     final String messageIdStr = rawId?.toString() ?? '';
-    final rawTimestamp = messageDoc['created_at'] ?? messageDoc['createdAt'];
 
-    final String? replyToUsername = messageDoc['reply_to_username'];
-    final String? replyToText = messageDoc['reply_to_text'];
-    final dynamic replyToId = messageDoc['reply_to_id'];
+    final String? replyToUsername = message.replyToUsername;
+    final String? replyToText = message.replyToText;
+    final dynamic replyToId = message.replyToId;
 
     final isHighlighted = (messageIdStr == widget.highlightedMessageId);
     final bubbleKey = widget.messageKeys.putIfAbsent(
@@ -572,32 +569,18 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       () => GlobalKey(),
     );
 
+    final bool isPending = message.id?.toString().startsWith('temp_') ?? false;
+
     String formattedTime = '';
-    if (rawTimestamp != null) {
-      DateTime? dateTime;
-      if (rawTimestamp is DateTime) {
-        dateTime = rawTimestamp;
-      } else if (rawTimestamp is String) {
-        dateTime = DateTime.tryParse(rawTimestamp);
-      }
-      if (dateTime != null) {
-        formattedTime = DateFormat('h:mm a').format(dateTime.toLocal());
-      }
+    if (message.createdAt != null) {
+      formattedTime = DateFormat('h:mm a').format(message.createdAt!.toLocal());
     }
 
     // Check if message was sent within last 1 hour (60 minutes)
     bool canEdit = false;
-    if (isMe && rawTimestamp != null) {
-      DateTime? dateTime;
-      if (rawTimestamp is DateTime) {
-        dateTime = rawTimestamp;
-      } else if (rawTimestamp is String) {
-        dateTime = DateTime.tryParse(rawTimestamp);
-      }
-      if (dateTime != null) {
-        final difference = DateTime.now().toUtc().difference(dateTime.toUtc());
-        canEdit = difference.inMinutes <= 60;
-      }
+    if (isMe && message.createdAt != null) {
+      final difference = DateTime.now().toUtc().difference(message.createdAt!.toUtc());
+      canEdit = difference.inMinutes <= 60;
     }
 
     final List<MenuItem> menuItems = [
@@ -696,23 +679,11 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                         onPressed: () async {
                           Navigator.pop(context);
                           widget.onHideMessageLocally?.call(messageIdStr);
-                          if (isMe && rawId != null && isDeleteForOthers) {
-                            try {
-                              await Supabase.instance.client
-                                  .from('chat_messages')
-                                  .delete()
-                                  .eq('id', rawId);
-                            } catch (e) {
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Failed to delete message: $e',
-                                    ),
-                                  ),
-                                );
-                              }
-                            }
+                          if (isMe && rawId != null) {
+                            MessageRepository.instance.deleteOptimisticMessage(
+                              id: rawId,
+                              isMe: isDeleteForOthers,
+                            );
                           }
                         },
                         child: const Text(
@@ -823,17 +794,33 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
             const SizedBox(height: 3),
             Align(
               alignment: AlignmentDirectional.bottomEnd,
-              child: Text(
-                formattedTime,
-                style: TextStyle(
-                  color: isMe
-                      ? Theme.of(context).colorScheme.onPrimary.withAlpha(200)
-                      : Theme.of(
-                          context,
-                        ).colorScheme.onSecondaryContainer.withAlpha(200),
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w400,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    formattedTime,
+                    style: TextStyle(
+                      color: isMe
+                          ? Theme.of(context).colorScheme.onPrimary.withAlpha(200)
+                          : Theme.of(
+                              context,
+                            ).colorScheme.onSecondaryContainer.withAlpha(200),
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  if (isMe) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      isPending ? Icons.watch_later_outlined : Icons.check,
+                      size: 12,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onPrimary
+                          .withAlpha(200),
+                    ),
+                  ],
+                ],
               ),
             ),
           ],

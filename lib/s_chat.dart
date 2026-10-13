@@ -11,25 +11,31 @@ final _colorScheme = ColorScheme.fromSeed(
 
 class SChat extends StatelessWidget {
   const SChat({super.key});
+
   @override
   Widget build(BuildContext context) {
+    final session = Supabase.instance.client.auth.currentSession;
+    final user = Supabase.instance.client.auth.currentUser;
+
     return MaterialApp(
       title: 'SChat',
       debugShowCheckedModeBanner: false,
-
       theme: ThemeData().copyWith(colorScheme: _colorScheme),
-      home: StreamBuilder(
-        stream: Supabase.instance.client.auth.onAuthStateChange,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const SplashScreen();
-          }
-          if (snapshot.data?.session != null) {
-            return const ChatScreen();
-          }
-          return const AuthScreen();
-        },
-      ),
+      home: (session != null || user != null)
+          ? const ChatScreen()
+          : StreamBuilder<AuthState>(
+              stream: Supabase.instance.client.auth.onAuthStateChange,
+              builder: (context, snapshot) {
+                if (snapshot.data?.session != null ||
+                    Supabase.instance.client.auth.currentUser != null) {
+                  return const ChatScreen();
+                }
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const SplashScreen();
+                }
+                return const AuthScreen();
+              },
+            ),
     );
   }
 }
