@@ -6,10 +6,32 @@ import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/services/profile_cache_service.dart';
 
+import 'package:s_chat/widgets/list_dividers.dart';
 import 'package:s_chat/widgets/message_cluster.dart';
 import 'package:s_chat/widgets/new_message.dart';
 
+import 'package:sticky_headers/sticky_headers.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Sealed hierarchy representing non-header items within a date group
+abstract class ChatListItem {}
+
+class UnreadDividerListItem extends ChatListItem {
+  final String label;
+  UnreadDividerListItem({this.label = 'Not Read Messages'});
+}
+
+class ClusterListItem extends ChatListItem {
+  final MessageCluster cluster;
+  ClusterListItem(this.cluster);
+}
+
+/// Group of chat items under a specific calendar date header
+class DateGroup {
+  final DateTime date;
+  final List<ChatListItem> items;
+  DateGroup({required this.date, required this.items});
+}
 
 class ChatMessages extends StatefulWidget {
   const ChatMessages({
@@ -32,6 +54,11 @@ class _ChatMessagesState extends State<ChatMessages> {
   bool _isAtBottom = true;
   int _lastMessageCount = 0;
   bool _hasInitialScrolled = false;
+
+  // Last read tracking
+  DateTime? _initialLastReadTimestamp;
+  bool _hasCapturedInitialLastRead = false;
+  bool _hasScheduledLastReadUpdate = false;
 
   // Highlight & scroll tracking for replied messages
   String? _highlightedMessageId;
@@ -142,6 +169,7 @@ class _ChatMessagesState extends State<ChatMessages> {
       final isLastFromMe = chatDocs.last.userId == currentUserId;
       if (_isAtBottom || isLastFromMe) {
         _scrollToBottom(animate: true);
+        MessageRepository.instance.updateLastReadTimestamp();
       }
     }
     _lastMessageCount = messageCount;
@@ -162,16 +190,66 @@ class _ChatMessagesState extends State<ChatMessages> {
     return null;
   }
 
-  List<MessageCluster> _groupMessages(
+  bool _isSameDay(DateTime a, DateTime b) {
+    final localA = a.toLocal();
+    final localB = b.toLocal();
+    return localA.year == localB.year &&
+        localA.month == localB.month &&
+        localA.day == localB.day;
+  }
+
+  List<DateGroup> _buildDateGroups(
     List<ChatMessage> docs,
     String currentUserId,
   ) {
-    final List<MessageCluster> clusters = [];
+    final List<DateGroup> dateGroups = [];
+    if (docs.isEmpty) return dateGroups;
+
+    if (!_hasCapturedInitialLastRead) {
+      _initialLastReadTimestamp = MessageRepository.instance.lastReadTimestamp;
+      _hasCapturedInitialLastRead = true;
+
+      if (!_hasScheduledLastReadUpdate) {
+        _hasScheduledLastReadUpdate = true;
+        Timer(const Duration(seconds: 3), () {
+          if (mounted) {
+            MessageRepository.instance.updateLastReadTimestamp();
+          }
+        });
+      }
+    }
+
+    bool unreadDividerInserted = false;
+
     for (final message in docs) {
       final String idStr = message.id?.toString() ?? '';
       if (_hiddenMessageIds.contains(idStr)) continue;
 
+      final messageDate = message.createdAt?.toLocal() ?? DateTime.now();
       final isMe = message.userId == currentUserId;
+
+      final bool isUnread = !isMe &&
+          _initialLastReadTimestamp != null &&
+          message.createdAt != null &&
+          message.createdAt!.isAfter(_initialLastReadTimestamp!);
+
+      // Find or create DateGroup
+      DateGroup? currentGroup;
+      if (dateGroups.isNotEmpty &&
+          _isSameDay(dateGroups.last.date, messageDate)) {
+        currentGroup = dateGroups.last;
+      } else {
+        currentGroup = DateGroup(date: messageDate, items: []);
+        dateGroups.add(currentGroup);
+      }
+
+      // Check if unread divider needs to be inserted
+      if (isUnread && !unreadDividerInserted) {
+        currentGroup.items.add(UnreadDividerListItem());
+        unreadDividerInserted = true;
+      }
+
+      // Resolve user profile info
       final cachedProfile = (message.username == 'Anonymous' || message.username.isEmpty)
           ? _getProfile(message.userId)
           : null;
@@ -184,10 +262,19 @@ class _ChatMessagesState extends State<ChatMessages> {
           ? message.userImage
           : (cachedProfile?['image_url'] ?? '');
 
-      if (clusters.isNotEmpty && clusters.last.userId == message.userId) {
-        clusters.last.messages.add(message);
-      } else {
-        clusters.add(
+      // Cluster messages sent by same user consecutively
+      if (currentGroup.items.isNotEmpty &&
+          currentGroup.items.last is ClusterListItem) {
+        final lastCluster =
+            (currentGroup.items.last as ClusterListItem).cluster;
+        if (lastCluster.userId == message.userId) {
+          lastCluster.messages.add(message);
+          continue;
+        }
+      }
+
+      currentGroup.items.add(
+        ClusterListItem(
           MessageCluster(
             userId: message.userId,
             username: finalUsername,
@@ -195,15 +282,16 @@ class _ChatMessagesState extends State<ChatMessages> {
             isMe: isMe,
             messages: [message],
           ),
-        );
-      }
+        ),
+      );
     }
-    return clusters;
+
+    return dateGroups;
   }
 
   void _scrollToAndHighlightMessage(
     dynamic targetId,
-    List<MessageCluster> clusters,
+    List<DateGroup> dateGroups,
   ) {
     if (targetId == null) return;
     final targetStr = targetId.toString();
@@ -234,22 +322,28 @@ class _ChatMessagesState extends State<ChatMessages> {
       return;
     }
 
-    // 3. Fallback: Estimate position and scroll
-    int targetClusterIndex = -1;
-    for (int i = 0; i < clusters.length; i++) {
-      for (final msg in clusters[i].messages) {
-        if (msg.id?.toString() == targetStr) {
-          targetClusterIndex = i;
-          break;
+    // 3. Fallback: Estimate position across date groups
+    int targetGroupIndex = -1;
+    for (int i = 0; i < dateGroups.length; i++) {
+      final group = dateGroups[i];
+      for (final item in group.items) {
+        if (item is ClusterListItem) {
+          for (final msg in item.cluster.messages) {
+            if (msg.id?.toString() == targetStr) {
+              targetGroupIndex = i;
+              break;
+            }
+          }
         }
+        if (targetGroupIndex != -1) break;
       }
-      if (targetClusterIndex != -1) break;
+      if (targetGroupIndex != -1) break;
     }
 
-    if (targetClusterIndex != -1 && widget.scrollController.hasClients) {
+    if (targetGroupIndex != -1 && widget.scrollController.hasClients) {
       final double maxExtent = widget.scrollController.position.maxScrollExtent;
       final double estimatedOffset =
-          (targetClusterIndex / clusters.length) * maxExtent;
+          (targetGroupIndex / dateGroups.length) * maxExtent;
       widget.scrollController.animateTo(
         estimatedOffset.clamp(0.0, maxExtent),
         duration: const Duration(milliseconds: 350),
@@ -297,32 +391,53 @@ class _ChatMessagesState extends State<ChatMessages> {
         _checkSuperCleaning(chatDocs);
         _handleScroll(chatDocs, authenticatedUserId);
 
-        final clusters = _groupMessages(chatDocs, authenticatedUserId);
+        final dateGroups = _buildDateGroups(chatDocs, authenticatedUserId);
 
         return ListView.builder(
           controller: widget.scrollController,
-          itemCount: clusters.length,
+          itemCount: dateGroups.length,
           cacheExtent: 500,
           itemBuilder: (context, index) {
-            final cluster = clusters[index];
-            return MessageClusterWidget(
-              key: ValueKey(
-                'cluster_${cluster.userId}_${cluster.messages.first.id}',
+            final group = dateGroups[index];
+
+            return StickyHeader(
+              header: DateDividerWidget(
+                key: ValueKey(
+                  'date_${group.date.year}_${group.date.month}_${group.date.day}',
+                ),
+                date: group.date,
               ),
-              cluster: cluster,
-              scrollController: widget.scrollController,
-              editingNotifier: widget.editingNotifier,
-              replyingNotifier: widget.replyingNotifier,
-              highlightedMessageId: _highlightedMessageId,
-              messageKeys: _messageKeys,
-              onHideMessageLocally: (id) {
-                setState(() {
-                  _hiddenMessageIds.add(id);
-                });
-              },
-              onTapReplyPreview: (targetId) {
-                _scrollToAndHighlightMessage(targetId, clusters);
-              },
+              content: Column(
+                children: [
+                  for (final item in group.items) ...[
+                    if (item is UnreadDividerListItem)
+                      UnreadDividerWidget(
+                        key: const ValueKey('unread_messages_divider'),
+                        label: item.label,
+                      ),
+                    if (item is ClusterListItem)
+                      MessageClusterWidget(
+                        key: ValueKey(
+                          'cluster_${item.cluster.userId}_${item.cluster.messages.first.id}',
+                        ),
+                        cluster: item.cluster,
+                        scrollController: widget.scrollController,
+                        editingNotifier: widget.editingNotifier,
+                        replyingNotifier: widget.replyingNotifier,
+                        highlightedMessageId: _highlightedMessageId,
+                        messageKeys: _messageKeys,
+                        onHideMessageLocally: (id) {
+                          setState(() {
+                            _hiddenMessageIds.add(id);
+                          });
+                        },
+                        onTapReplyPreview: (targetId) {
+                          _scrollToAndHighlightMessage(targetId, dateGroups);
+                        },
+                      ),
+                  ],
+                ],
+              ),
             );
           },
         );
@@ -330,4 +445,3 @@ class _ChatMessagesState extends State<ChatMessages> {
     );
   }
 }
-

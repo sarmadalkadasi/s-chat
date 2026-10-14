@@ -27,6 +27,7 @@ class MessageRepository {
   bool _initialized = false;
   bool _isProcessingOutbox = false;
   bool _isOnline = true;
+  DateTime? _lastReadTimestamp;
 
   Stream<List<ChatMessage>> get messagesStream => _messagesController.stream;
   Stream<bool> get isOnlineStream => _isOnlineController.stream;
@@ -34,6 +35,7 @@ class MessageRepository {
   bool get isLoadingOlder => _isLoadingOlder;
   bool get hasMoreOlderMessages => _hasMoreOlderMessages;
   bool get isOnline => _isOnline;
+  DateTime? get lastReadTimestamp => _lastReadTimestamp;
 
   Future<File> get _cacheFile async {
     final dir = await getApplicationDocumentsDirectory();
@@ -91,10 +93,49 @@ class MessageRepository {
     return null;
   }
 
+  Future<File> get _lastReadFile async {
+    final dir = await getApplicationDocumentsDirectory();
+    final cacheDir = Directory('${dir.path}/s_chat_data');
+    if (!await cacheDir.exists()) {
+      await cacheDir.create(recursive: true);
+    }
+    return File('${cacheDir.path}/last_read_timestamp.json');
+  }
+
+  Future<void> _loadLastReadTimestamp() async {
+    try {
+      final file = await _lastReadFile;
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        if (content.isNotEmpty) {
+          final Map<String, dynamic> data = json.decode(content);
+          final raw = data['last_read_timestamp'];
+          if (raw is String) {
+            _lastReadTimestamp = DateTime.tryParse(raw);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> updateLastReadTimestamp([DateTime? timestamp]) async {
+    final newTime = timestamp ?? DateTime.now().toUtc();
+    _lastReadTimestamp = newTime;
+    try {
+      final file = await _lastReadFile;
+      await file.writeAsString(json.encode({
+        'last_read_timestamp': newTime.toIso8601String(),
+      }));
+    } catch (_) {}
+  }
+
   /// Initialize offline cache, outbox queue, initial fetch, and Realtime subscription
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
+
+    // Load last read timestamp
+    await _loadLastReadTimestamp();
 
     // 1. Load offline disk cache immediately (0ms instant UI)
     await _loadFromDiskCache();

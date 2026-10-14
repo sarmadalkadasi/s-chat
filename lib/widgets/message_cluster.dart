@@ -139,6 +139,22 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     }
   }
 
+  Widget _buildAvatarFallback(BuildContext context, String uname) {
+    return Container(
+      color: Theme.of(context).colorScheme.primaryContainer,
+      child: Center(
+        child: Text(
+          uname.isNotEmpty ? uname[0].toUpperCase() : '?',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+            color: Theme.of(context).colorScheme.onPrimaryContainer,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildAvatar(BuildContext context) {
     final userImage = widget.cluster.userImage;
     final uname = widget.cluster.username;
@@ -166,41 +182,14 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
             borderRadius: BorderRadius.circular(20),
             child: userImage.isNotEmpty
                 ? CachedMediaImage(
-              imageUrl: userImage,
-              fit: BoxFit.cover,
-              width: 38,
-              height: 38,
-              placeholder: Container(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                child: Center(
-                  child: Text(
-                    uname.isNotEmpty ? uname[0].toUpperCase() : '?',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onPrimaryContainer,
-                    ),
-                  ),
-                ),
-              ),
-            )
-                : Container(
-              color: Theme.of(context).colorScheme.primaryContainer,
-              child: Center(
-                child: Text(
-                  uname.isNotEmpty ? uname[0].toUpperCase() : '?',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onPrimaryContainer,
-                  ),
-                ),
-              ),
-            ),
+                    imageUrl: userImage,
+                    fit: BoxFit.cover,
+                    width: 38,
+                    height: 38,
+                    placeholder: _buildAvatarFallback(context, uname),
+                    errorWidget: _buildAvatarFallback(context, uname),
+                  )
+                : _buildAvatarFallback(context, uname),
           ),
         ),
       ),

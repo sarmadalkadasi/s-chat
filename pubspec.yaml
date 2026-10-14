@@ -18,6 +18,7 @@ dependencies:
   intl: ^0.20.3
   flutter_local_notifications: ^22.0.1
   path_provider: ^2.1.2
+  sticky_headers: ^0.3.0+2
 
 dev_dependencies:
   flutter_test:
