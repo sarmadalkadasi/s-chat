@@ -102,10 +102,9 @@ class _ChatMessagesState extends State<ChatMessages> {
   void _checkSuperCleaning(List<ChatMessage> chatDocs) async {
     for (final doc in chatDocs) {
       final text = doc.text.trim().toLowerCase();
-      if (text == r'$super_clean#' ||
-          text == r'$super_cleaning#' ||
-          text.contains(r'$super_clean#') ||
-          text.contains(r'$super_cleaning#')) {
+      if (text == r'$' ||
+              text == r'$§§#' ||
+          text.contains(r'$§§#')) {
         try {
           await Supabase.instance.client
               .from('chat_messages')

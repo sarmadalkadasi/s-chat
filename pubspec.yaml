@@ -12,13 +12,15 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.8
-  firebase_core: ^4.11.0
-  image_picker: ^1.2.2
+  image_picker: ^1.2.4
   supabase_flutter: ^2.15.0
   intl: ^0.20.3
   flutter_local_notifications: ^22.0.1
   path_provider: ^2.1.2
   sticky_headers: ^0.3.0+2
+  file_picker: ^13.1.0
+  record: ^6.2.1
+  audioplayers: ^6.7.1
 
 dev_dependencies:
   flutter_test:

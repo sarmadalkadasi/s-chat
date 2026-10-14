@@ -7,7 +7,7 @@ class LocalNotificationManager {
   static const AndroidNotificationChannel _channel = AndroidNotificationChannel(
     'local_chat_channel',
     'Direct Chat Messages',
-    description: 'Triggers when a new Firestore message is detected locally.',
+    description: 'Triggers when a new Supabase message is detected locally.',
     importance: Importance.max,
   );
 

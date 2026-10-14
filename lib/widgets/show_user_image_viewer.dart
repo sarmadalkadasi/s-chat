@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:s_chat/widgets/cached_media_image.dart';
+import 'package:s_chat/widgets/image_viewer.dart';
 
-void showImageViewer(
+void showUserImageViewer(
   BuildContext context, {
   required String imageUrl,
   required String title,
@@ -45,21 +46,43 @@ void showImageViewer(
             // Profile image card with Hero animation
             Hero(
               tag: imageUrl.isNotEmpty
-                  ? 'bubble_avatar_$imageUrl'
+                  ? imageUrl
                   : UniqueKey().toString(),
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  bottom: Radius.circular(24),
+              child: InkWell(
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => ImageViewer(
+                      imageUrl: imageUrl,
+                      imageType: ImageType.network,
+                    ),
+                  ),
                 ),
-                child: Container(
-                  width: 340,
-                  height: 340,
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  child: imageUrl.isNotEmpty
-                      ? CachedMediaImage(
-                          imageUrl: imageUrl,
-                          fit: BoxFit.cover,
-                          errorWidget: Center(
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(24),
+                  ),
+                  child: Container(
+                    width: 340,
+                    height: 340,
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    child: imageUrl.isNotEmpty
+                        ? CachedMediaImage(
+                            imageUrl: imageUrl,
+                            fit: BoxFit.cover,
+                            errorWidget: Center(
+                              child: Text(
+                                title.isNotEmpty ? title[0].toUpperCase() : '?',
+                                style: TextStyle(
+                                  fontSize: 72,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onPrimaryContainer,
+                                ),
+                              ),
+                            ),
+                          )
+                        : Center(
                             child: Text(
                               title.isNotEmpty ? title[0].toUpperCase() : '?',
                               style: TextStyle(
@@ -71,19 +94,7 @@ void showImageViewer(
                               ),
                             ),
                           ),
-                        )
-                      : Center(
-                          child: Text(
-                            title.isNotEmpty ? title[0].toUpperCase() : '?',
-                            style: TextStyle(
-                              fontSize: 72,
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onPrimaryContainer,
-                            ),
-                          ),
-                        ),
+                  ),
                 ),
               ),
             ),

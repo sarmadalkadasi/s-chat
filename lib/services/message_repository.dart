@@ -4,7 +4,19 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:s_chat/models/chat_message.dart';
+import 'package:s_chat/services/profile_cache_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Current local sync phase for a media message.
+/// The standard Supabase Storage upload API used below does not expose byte-level
+/// progress, so `uploading` is represented by an indeterminate progress bar.
+enum MediaSyncPhase { queued, uploading, savingMessage }
+
+class MediaSyncStatus {
+  final MediaSyncPhase phase;
+
+  const MediaSyncStatus(this.phase);
+}
 
 class MessageRepository {
   MessageRepository._();
@@ -12,11 +24,17 @@ class MessageRepository {
 
   static const int pageSize = 30;
 
+  /// Create this as a PRIVATE bucket in Supabase Storage.
+  static const String mediaStorageBucket = 'chat-media';
+
   final StreamController<List<ChatMessage>> _messagesController =
-      StreamController<List<ChatMessage>>.broadcast();
+  StreamController<List<ChatMessage>>.broadcast();
 
   final StreamController<bool> _isOnlineController =
-      StreamController<bool>.broadcast();
+  StreamController<bool>.broadcast();
+  final StreamController<Map<String, MediaSyncStatus>> _mediaSyncController =
+  StreamController<Map<String, MediaSyncStatus>>.broadcast();
+  final Map<String, MediaSyncStatus> _mediaSyncStatuses = {};
 
   List<ChatMessage> _messages = [];
   List<Map<String, dynamic>> _outbox = [];
@@ -25,13 +43,32 @@ class MessageRepository {
   bool _isLoadingOlder = false;
   bool _hasMoreOlderMessages = true;
   bool _initialized = false;
+  Future<void>? _initFuture;
   bool _isProcessingOutbox = false;
   bool _isOnline = true;
   DateTime? _lastReadTimestamp;
 
   Stream<List<ChatMessage>> get messagesStream => _messagesController.stream;
   Stream<bool> get isOnlineStream => _isOnlineController.stream;
+  Stream<Map<String, MediaSyncStatus>> get mediaSyncStatusStream =>
+      _mediaSyncController.stream;
+  Map<String, MediaSyncStatus> get mediaSyncStatuses =>
+      Map.unmodifiable(_mediaSyncStatuses);
   List<ChatMessage> get currentMessages => List.unmodifiable(_messages);
+
+  void _setMediaSyncStatus(String messageId, MediaSyncPhase phase) {
+    _mediaSyncStatuses[messageId] = MediaSyncStatus(phase);
+    if (!_mediaSyncController.isClosed) {
+      _mediaSyncController.add(Map.unmodifiable(_mediaSyncStatuses));
+    }
+  }
+
+  void _clearMediaSyncStatus(String messageId) {
+    if (_mediaSyncStatuses.remove(messageId) != null &&
+        !_mediaSyncController.isClosed) {
+      _mediaSyncController.add(Map.unmodifiable(_mediaSyncStatuses));
+    }
+  }
   bool get isLoadingOlder => _isLoadingOlder;
   bool get hasMoreOlderMessages => _hasMoreOlderMessages;
   bool get isOnline => _isOnline;
@@ -129,34 +166,29 @@ class MessageRepository {
     } catch (_) {}
   }
 
-  /// Initialize offline cache, outbox queue, initial fetch, and Realtime subscription
-  Future<void> init() async {
+  /// Initialize cache/outbox once. Concurrent callers await the same future,
+  /// preventing a newly queued item from racing against loading the old outbox.
+  Future<void> init() {
+    if (_initFuture != null) return _initFuture!;
+    _initFuture = _initialize();
+    return _initFuture!;
+  }
+
+  Future<void> _initialize() async {
     if (_initialized) return;
     _initialized = true;
 
-    // Load last read timestamp
     await _loadLastReadTimestamp();
-
-    // 1. Load offline disk cache immediately (0ms instant UI)
     await _loadFromDiskCache();
-
-    // 2. Load offline outbox queue
     await _loadOutboxFromDisk();
 
-    // 3. Fetch initial messages from Supabase online
-    _fetchInitialMessages();
-
-    // 4. Process pending outbox queue
-    _processOfflineOutbox();
-
-    // 5. Setup Realtime subscription
+    // Fetching and syncing stay asynchronous so the local UI isn't network-bound.
+    unawaited(_fetchInitialMessages());
+    unawaited(_processOfflineOutbox());
     _setupRealtimeSubscription();
 
-    // 6. Periodic sync & outbox retry loop (every 10s)
     Timer.periodic(const Duration(seconds: 10), (_) {
-      if (_outbox.isNotEmpty) {
-        _processOfflineOutbox();
-      }
+      if (_outbox.isNotEmpty) unawaited(_processOfflineOutbox());
     });
   }
 
@@ -182,16 +214,16 @@ class MessageRepository {
       final file = await _cacheFile;
       final jsonList = _messages
           .map((m) => {
-                'id': m.id,
-                'user_id': m.userId,
-                'text': m.text,
-                'username': m.username,
-                'user_image': m.userImage,
-                'created_at': m.createdAt?.toUtc().toIso8601String(),
-                'reply_to_id': m.replyToId,
-                'reply_to_username': m.replyToUsername,
-                'reply_to_text': m.replyToText,
-              })
+        'id': m.id,
+        'user_id': m.userId,
+        'text': m.text,
+        'username': m.username,
+        'user_image': m.userImage,
+        'created_at': m.createdAt?.toUtc().toIso8601String(),
+        'reply_to_id': m.replyToId,
+        'reply_to_username': m.replyToUsername,
+        'reply_to_text': m.replyToText,
+      })
           .toList();
       await file.writeAsString(json.encode(jsonList));
     } catch (e) {
@@ -207,6 +239,19 @@ class MessageRepository {
         if (content.isNotEmpty) {
           final List<dynamic> jsonList = json.decode(content);
           _outbox = jsonList.cast<Map<String, dynamic>>();
+          for (final item in _outbox) {
+            if (item['action'] == 'insert_media') {
+              final tempId = item['temp_id']?.toString();
+              if (tempId != null && tempId.isNotEmpty) {
+                _mediaSyncStatuses[tempId] =
+                const MediaSyncStatus(MediaSyncPhase.queued);
+              }
+            }
+          }
+          if (_mediaSyncStatuses.isNotEmpty &&
+              !_mediaSyncController.isClosed) {
+            _mediaSyncController.add(Map.unmodifiable(_mediaSyncStatuses));
+          }
         }
       }
     } catch (e) {
@@ -348,6 +393,191 @@ class MessageRepository {
     _processOfflineOutbox();
   }
 
+  /// Queues an attachment using the same optimistic cache and outbox as text.
+  ///
+  /// The original file is copied into application documents before the UI is
+  /// updated, so a temporary recorder/picker file cannot disappear before the
+  /// device reconnects. Supabase Storage upload + `chat_messages` insert are
+  /// then processed by `_processOfflineOutbox` when the network is available.
+  Future<void> sendOptimisticMedia({
+    required String kind,
+    required String name,
+    String? path,
+    String? url,
+    int? sizeBytes,
+    dynamic replyToId,
+    String? replyToUsername,
+    String? replyToText,
+  }) async {
+    await init();
+
+    final currentUser = Supabase.instance.client.auth.currentUser;
+    final cachedSession = await getCachedUserSession();
+
+    String userId = currentUser?.id ?? cachedSession?['user_id'] ?? '';
+    String username = cachedSession?['username'] ?? '';
+    String userImage = cachedSession?['user_image'] ?? '';
+
+    if (currentUser != null && (username.isEmpty || userImage.isEmpty)) {
+      final metadata = currentUser.userMetadata;
+      if (username.isEmpty) username = metadata?['username']?.toString() ?? '';
+      if (userImage.isEmpty) userImage = metadata?['image_url']?.toString() ?? '';
+
+      if (username.isEmpty || userImage.isEmpty) {
+        final profile = ProfileCacheService.instance.getCached(currentUser.id);
+        if (profile != null) {
+          if (username.isEmpty) username = profile['username']?.toString() ?? 'User';
+          if (userImage.isEmpty) userImage = profile['image_url']?.toString() ?? '';
+        }
+      }
+    }
+
+    if (username.isEmpty) username = 'User';
+    if (userId.isEmpty) userId = 'guest_user';
+
+    await saveUserSession(
+      userId: userId,
+      username: username,
+      userImage: userImage,
+    );
+
+    final tempId = 'temp_${DateTime.now().microsecondsSinceEpoch}';
+    final createdAt = DateTime.now().toUtc();
+    String? durablePath;
+    String? storagePath;
+
+    if (kind != 'url') {
+      if (path == null || path.trim().isEmpty) {
+        throw ArgumentError(
+          'A local file path is required for $kind attachments.',
+        );
+      }
+      durablePath = await _copyMediaToPersistentStorage(path, tempId, name);
+      storagePath = '${_safePathPart(userId)}/$tempId/${_safeFileName(name)}';
+    } else if (url == null || url.trim().isEmpty) {
+      throw ArgumentError('A URL is required for link attachments.');
+    }
+
+    final localPayload = <String, dynamic>{
+      'v': 1,
+      'kind': kind,
+      'name': name,
+      'status': 'pending',
+      if (durablePath != null) 'local_path': durablePath,
+      if (url != null) 'url': url,
+      if (storagePath != null) 'storage_path': storagePath,
+      if (sizeBytes != null) 'size_bytes': sizeBytes,
+    };
+    final encodedText = ChatMessage.encodeMediaText(localPayload);
+
+    final optimisticMessage = ChatMessage(
+      id: tempId,
+      userId: userId,
+      text: encodedText,
+      username: username,
+      userImage: userImage,
+      createdAt: createdAt,
+      replyToId: replyToId,
+      replyToUsername: replyToUsername,
+      replyToText: replyToText,
+    );
+
+    // 1. Show the attachment immediately and persist it in the local cache.
+    _mergeMessages([optimisticMessage]);
+    await _saveToDiskCache();
+
+    // 2. Put the durable local path and metadata in the existing offline queue.
+    _outbox.add({
+      'action': 'insert_media',
+      'temp_id': tempId,
+      'kind': kind,
+      'name': name,
+      'local_path': durablePath,
+      'storage_path': storagePath,
+      'url': url,
+      'size_bytes': sizeBytes,
+      'uploaded': false,
+      'data': {
+        'user_id': userId,
+        'text': encodedText,
+        'username': username,
+        'user_image': userImage,
+        'created_at': createdAt.toIso8601String(),
+        if (replyToId != null) ...{
+          'reply_to_id': replyToId,
+          'reply_to_username': replyToUsername,
+          'reply_to_text': replyToText,
+        },
+      },
+    });
+    await _saveOutboxToDisk();
+    _setMediaSyncStatus(tempId, MediaSyncPhase.queued);
+
+    // 3. This returns immediately when offline; the queue retries later.
+    unawaited(_processOfflineOutbox());
+  }
+
+  Future<String> _copyMediaToPersistentStorage(
+      String sourcePath,
+      String tempId,
+      String displayName,
+      ) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      throw FileSystemException(
+        'Selected attachment no longer exists',
+        sourcePath,
+      );
+    }
+
+    final appDirectory = await getApplicationDocumentsDirectory();
+    final target = File(
+      '${appDirectory.path}${Platform.pathSeparator}s_chat_data'
+          '${Platform.pathSeparator}pending_media${Platform.pathSeparator}$tempId'
+          '${Platform.pathSeparator}${_safeFileName(displayName)}',
+    );
+    await target.parent.create(recursive: true);
+
+    if (source.absolute.path == target.absolute.path) return target.path;
+    await source.copy(target.path);
+    return target.path;
+  }
+
+  String _safeFileName(String input) {
+    final leaf = input.split(RegExp(r'[/\\]')).last.trim();
+    final cleaned = leaf.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    return cleaned.isEmpty ? 'attachment' : cleaned;
+  }
+
+  String _safePathPart(String input) {
+    final cleaned = input.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    return cleaned.isEmpty ? 'unknown_user' : cleaned;
+  }
+
+  String _mediaContentType(String kind, String name) {
+    final extension = name.contains('.')
+        ? name.split('.').last.toLowerCase()
+        : '';
+    switch (kind) {
+      case 'audio':
+        if (extension == 'mp3') return 'audio/mpeg';
+        if (extension == 'wav') return 'audio/wav';
+        if (extension == 'ogg' || extension == 'opus') return 'audio/ogg';
+        return 'audio/mp4'; // Recorder outputs AAC in an M4A container.
+      case 'image':
+        if (extension == 'png') return 'image/png';
+        if (extension == 'webp') return 'image/webp';
+        if (extension == 'gif') return 'image/gif';
+        return 'image/jpeg';
+      case 'video':
+        if (extension == 'mov') return 'video/quicktime';
+        if (extension == 'webm') return 'video/webm';
+        return 'video/mp4';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
   /// Optimistically edits an existing message in local UI state instantly (0ms), then queues for network sync
   Future<void> editOptimisticMessage({
     required dynamic id,
@@ -397,6 +627,29 @@ class MessageRepository {
     _messagesController.add(_messages);
     await _saveToDiskCache();
 
+    if (idStr.startsWith('temp_')) {
+      // A queued item has no server ID yet. Remove its insert action instead
+      // of queuing a database DELETE for a temporary ID that cannot exist there.
+      final pendingItems = _outbox
+          .where((item) => item['temp_id']?.toString() == idStr)
+          .toList(growable: false);
+      _outbox.removeWhere((item) => item['temp_id']?.toString() == idStr);
+      _clearMediaSyncStatus(idStr);
+      for (final item in pendingItems) {
+        final localPath = item['local_path'] as String?;
+        if (localPath != null) {
+          try {
+            final file = File(localPath);
+            if (await file.exists()) await file.parent.delete(recursive: true);
+          } catch (_) {
+            // Local cleanup is best-effort; the queue item is still removed.
+          }
+        }
+      }
+      await _saveOutboxToDisk();
+      return;
+    }
+
     if (isMe) {
       _outbox.add({
         'action': 'delete',
@@ -420,7 +673,7 @@ class MessageRepository {
         if (action == 'insert') {
           final tempId = item['temp_id'];
           final Map<String, dynamic> insertData =
-              Map<String, dynamic>.from(item['data']);
+          Map<String, dynamic>.from(item['data']);
 
           final response = await Supabase.instance.client
               .from('chat_messages')
@@ -434,10 +687,95 @@ class MessageRepository {
             _mergeMessages([confirmedMsg]);
             await _saveToDiskCache();
           }
+        } else if (action == 'insert_media') {
+          final tempId = item['temp_id']?.toString() ?? '';
+          _setMediaSyncStatus(tempId, MediaSyncPhase.uploading);
+          final kind = item['kind']?.toString() ?? 'file';
+          final name = item['name']?.toString() ?? 'Attachment';
+          final localPath = item['local_path'] as String?;
+          final storagePath = item['storage_path'] as String?;
+          final originalUrl = item['url'] as String?;
+          final Map<String, dynamic> insertData =
+          Map<String, dynamic>.from(item['data'] as Map);
+
+          if (kind != 'url') {
+            if (localPath == null || storagePath == null) {
+              throw StateError(
+                'Queued media is missing its local or storage path.',
+              );
+            }
+            final localFile = File(localPath);
+            if (!await localFile.exists()) {
+              throw FileSystemException(
+                'Queued media file is missing',
+                localPath,
+              );
+            }
+
+            // Persist this flag so a successful upload is not repeated if the
+            // following database insert fails. Upsert also covers a crash
+            // between upload completion and saving the flag.
+            if (item['uploaded'] != true) {
+              await Supabase.instance.client.storage
+                  .from(mediaStorageBucket)
+                  .upload(
+                storagePath,
+                localFile,
+                fileOptions: FileOptions(
+                  contentType: _mediaContentType(kind, name),
+                  upsert: true,
+                ),
+              );
+              item['uploaded'] = true;
+              await _saveOutboxToDisk();
+            }
+          }
+
+          // Do not send device-local paths to Supabase. Other devices receive
+          // the storage object path and make a signed URL when they need it.
+          final serverPayload = <String, dynamic>{
+            'v': 1,
+            'kind': kind,
+            'name': name,
+            'status': 'sent',
+            if (kind == 'url' && originalUrl != null) 'url': originalUrl,
+            if (storagePath != null) 'storage_path': storagePath,
+            if (item['size_bytes'] is int) 'size_bytes': item['size_bytes'],
+          };
+          insertData['text'] = ChatMessage.encodeMediaText(serverPayload);
+          _setMediaSyncStatus(tempId, MediaSyncPhase.savingMessage);
+
+          final response = await Supabase.instance.client
+              .from('chat_messages')
+              .insert(insertData)
+              .select()
+              .maybeSingle();
+
+          if (response == null) {
+            throw StateError(
+              'Supabase did not return the inserted media message.',
+            );
+          }
+
+          // Replace the local temporary row with the server row, but retain the
+          // sender's local media copy so it can be played/viewed offline.
+          _messages.removeWhere((m) => m.id.toString() == tempId);
+          var confirmedMessage = ChatMessage.fromMap(response);
+          if (localPath != null && confirmedMessage.mediaPayload != null) {
+            final localPayload = <String, dynamic>{
+              ...confirmedMessage.mediaPayload!,
+              'local_path': localPath,
+            };
+            confirmedMessage = confirmedMessage.copyWithText(
+              ChatMessage.encodeMediaText(localPayload),
+            );
+          }
+          _mergeMessages([confirmedMessage]);
+          await _saveToDiskCache();
         } else if (action == 'update') {
           final id = item['id'];
           final Map<String, dynamic> updateData =
-              Map<String, dynamic>.from(item['data']);
+          Map<String, dynamic>.from(item['data']);
 
           await Supabase.instance.client
               .from('chat_messages')
@@ -452,14 +790,26 @@ class MessageRepository {
         }
 
         _outbox.removeAt(0);
+        if (action == 'insert_media') {
+          final tempId = item['temp_id']?.toString();
+          if (tempId != null && tempId.isNotEmpty) {
+            _clearMediaSyncStatus(tempId);
+          }
+        }
         await _saveOutboxToDisk();
         _isOnline = true;
         _isOnlineController.add(true);
       } catch (e) {
-        debugPrint('Outbox item failed (offline): $e');
+        debugPrint('Outbox item failed (offline or sync error): $e');
         _isOnline = false;
         _isOnlineController.add(false);
-        break; // Pause outbox processing until network is restored
+        if (action == 'insert_media') {
+          final tempId = item['temp_id']?.toString();
+          if (tempId != null && tempId.isNotEmpty) {
+            _setMediaSyncStatus(tempId, MediaSyncPhase.queued);
+          }
+        }
+        break; // Pause outbox processing until the next retry.
       }
     }
 
@@ -470,8 +820,25 @@ class MessageRepository {
     final Map<String, ChatMessage> map = {
       for (var m in _messages) m.id.toString(): m
     };
-    for (var m in newMessages) {
-      map[m.id.toString()] = m;
+    for (var incoming in newMessages) {
+      final key = incoming.id.toString();
+      final existing = map[key];
+
+      // Realtime updates contain the remote metadata but not this device's
+      // local cache path. Preserve that path so attachments remain usable
+      // offline on the sending device.
+      final existingLocalPath = existing?.mediaLocalPath;
+      if (existingLocalPath != null &&
+          incoming.mediaPayload != null &&
+          incoming.mediaLocalPath == null) {
+        final payload = <String, dynamic>{
+          ...incoming.mediaPayload!,
+          'local_path': existingLocalPath,
+        };
+        map[key] = incoming.copyWithText(ChatMessage.encodeMediaText(payload));
+      } else {
+        map[key] = incoming;
+      }
     }
     _messages = map.values.toList();
     _sortMessagesChronologically();
@@ -484,13 +851,13 @@ class MessageRepository {
       _realtimeChannel = Supabase.instance.client
           .channel('public:chat_messages')
           .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'chat_messages',
-            callback: (payload) {
-              _handleRealtimePayload(payload);
-            },
-          )
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'chat_messages',
+        callback: (payload) {
+          _handleRealtimePayload(payload);
+        },
+      )
           .subscribe();
     } catch (e) {
       debugPrint('Realtime subscription error (offline): $e');
@@ -520,5 +887,6 @@ class MessageRepository {
     _realtimeChannel?.unsubscribe();
     _messagesController.close();
     _isOnlineController.close();
+    _mediaSyncController.close();
   }
 }

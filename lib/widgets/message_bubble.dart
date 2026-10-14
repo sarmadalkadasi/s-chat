@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:s_chat/widgets/show_image_viewer.dart';
+import 'package:s_chat/widgets/show_user_image_viewer.dart';
 
 class MessageBubble extends StatelessWidget {
   const MessageBubble({
@@ -50,7 +50,7 @@ class MessageBubble extends StatelessWidget {
               child: InkWell(
                 borderRadius: BorderRadius.circular(100),
                 onTap: () =>
-                  showImageViewer(
+                  showUserImageViewer(
                     context,
                     imageUrl: userImage,
                     title: uname,

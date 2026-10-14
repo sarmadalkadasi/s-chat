@@ -1,15 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:s_chat/s_chat.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await Supabase.initialize(
     url: 'https://xchbrnfkuiozonulvfoi.supabase.co',
     publishableKey: 'sb_secret_lJTya6AdqldBwl9N2RVRSA_A91WyK5I',

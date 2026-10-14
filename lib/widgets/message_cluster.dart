@@ -7,11 +7,12 @@ import 'package:s_chat/models/message_cluster.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/widgets/cached_media_image.dart';
+import 'package:s_chat/widgets/chat_media_message.dart';
 import 'package:s_chat/widgets/context_menu.dart';
 import 'package:s_chat/widgets/expandable_formatted_text.dart';
 import 'package:s_chat/widgets/new_message.dart';
 import 'package:s_chat/widgets/reply_preview.dart';
-import 'package:s_chat/widgets/show_image_viewer.dart';
+import 'package:s_chat/widgets/show_user_image_viewer.dart';
 import 'package:sticky_headers/sticky_headers.dart';
 
 class MessageClusterWidget extends StatefulWidget {
@@ -37,8 +38,7 @@ class MessageClusterWidget extends StatefulWidget {
   final void Function(dynamic targetMessageId)? onTapReplyPreview;
 
   @override
-  State<MessageClusterWidget> createState() =>
-      _MessageClusterWidgetState();
+  State<MessageClusterWidget> createState() => _MessageClusterWidgetState();
 }
 
 class _MessageClusterWidgetState extends State<MessageClusterWidget> {
@@ -61,9 +61,8 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
   Widget _buildAvatar(BuildContext context) {
     final userImage = widget.cluster.userImage;
     final uname = widget.cluster.username;
-
-    final firstMessageId = widget.cluster.messages.first.id ??
-        UniqueKey().toString();
+    final firstMessageId =
+        widget.cluster.messages.first.id ?? UniqueKey().toString();
 
     return Container(
       width: 42,
@@ -71,41 +70,28 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       padding: const EdgeInsets.all(2.0),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(
-          color: Colors.greenAccent.shade400,
-          width: 1.5,
-        ),
+        border: Border.all(color: Colors.greenAccent.shade400, width: 1.5),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(100),
         onTap: () {
-          showImageViewer(
-            context,
-            imageUrl: userImage,
-            title: uname,
-          );
+          showUserImageViewer(context, imageUrl: userImage, title: uname);
         },
         child: Hero(
           tag: userImage.isNotEmpty
-              ? 'bubble_avatar_$userImage'
+              ? userImage
               : 'avatar_${widget.cluster.userId}_$firstMessageId',
           child: ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: userImage.isNotEmpty
                 ? CachedMediaImage(
-              imageUrl: userImage,
-              fit: BoxFit.cover,
-              width: 38,
-              height: 38,
-              placeholder: _buildAvatarFallback(
-                context,
-                uname,
-              ),
-              errorWidget: _buildAvatarFallback(
-                context,
-                uname,
-              ),
-            )
+                    imageUrl: userImage,
+                    fit: BoxFit.cover,
+                    width: 38,
+                    height: 38,
+                    placeholder: _buildAvatarFallback(context, uname),
+                    errorWidget: _buildAvatarFallback(context, uname),
+                  )
                 : _buildAvatarFallback(context, uname),
           ),
         ),
@@ -114,17 +100,17 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
   }
 
   Widget _buildBubble(
-      BuildContext context,
-      ChatMessage message,
-      int index,
-      int totalCount,
-      ) {
+    BuildContext context,
+    ChatMessage message,
+    int index,
+    int totalCount,
+  ) {
     final isMe = widget.cluster.isMe;
-    final isFirst = index == 0;
-    final isLast = index == totalCount - 1;
-    final isSingle = totalCount == 1;
+    final isFirst = (index == 0);
+    final isLast = (index == totalCount - 1);
+    final isSingle = (totalCount == 1);
 
-    final messageText = message.text;
+    final messageText = message.displayText;
     final rawId = message.id;
     final String messageIdStr = rawId?.toString() ?? '';
 
@@ -132,33 +118,23 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     final String? replyToText = message.replyToText;
     final dynamic replyToId = message.replyToId;
 
-    final isHighlighted =
-        messageIdStr == widget.highlightedMessageId;
-
+    final isHighlighted = (messageIdStr == widget.highlightedMessageId);
     final bubbleKey = widget.messageKeys.putIfAbsent(
       messageIdStr,
-          () => GlobalKey(),
+      () => GlobalKey(),
     );
 
-    final bool isPending =
-        message.id?.toString().startsWith('temp_') ?? false;
+    final bool isPending = message.isPending;
 
     String formattedTime = '';
-
     if (message.createdAt != null) {
-      formattedTime = DateFormat('h:mm a').format(
-        message.createdAt!.toLocal(),
-      );
+      formattedTime = DateFormat('h:mm a').format(message.createdAt!.toLocal());
     }
 
-    // Allow editing messages sent within the last 60 minutes.
+    // Check if message was sent within last 1 hour (60 minutes)
     bool canEdit = false;
-
     if (isMe && message.createdAt != null) {
-      final difference = DateTime.now()
-          .toUtc()
-          .difference(message.createdAt!.toUtc());
-
+      final difference = DateTime.now().toUtc().difference(message.createdAt!.toUtc());
       canEdit = difference.inMinutes <= 60;
     }
 
@@ -181,11 +157,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
         icon: Icons.copy_rounded,
         onTap: () {
           FocusManager.instance.primaryFocus?.unfocus();
-
-          Clipboard.setData(
-            ClipboardData(text: messageText),
-          );
-
+          Clipboard.setData(ClipboardData(text: messageText));
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
@@ -198,7 +170,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
           );
         },
       ),
-      if (canEdit)
+      if (canEdit && !message.isMediaMessage)
         MenuItem(
           id: 'edit',
           title: 'Edit',
@@ -217,7 +189,6 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
         isDestructive: true,
         onTap: () {
           bool isDeleteForOthers = false;
-
           showDialog(
             context: context,
             builder: (context) {
@@ -229,16 +200,12 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Do you really want to delete this message?',
-                        ),
+                        const Text('Do you really want to delete this message?'),
                         if (isMe) ...[
                           const SizedBox(height: 8),
                           CheckboxListTile(
                             contentPadding:
-                            const EdgeInsets.symmetric(
-                              horizontal: 6,
-                            ),
+                                const EdgeInsets.symmetric(horizontal: 6),
                             value: isDeleteForOthers,
                             title: Text(
                               'Delete it for others, too',
@@ -246,8 +213,8 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                                   .textTheme
                                   .bodyMedium!
                                   .copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
+                                    fontWeight: FontWeight.bold,
+                                  ),
                             ),
                             onChanged: (value) {
                               setDialogState(() {
@@ -260,22 +227,15 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                     ),
                     actions: [
                       TextButton(
-                        onPressed: () {
-                          Navigator.pop(context);
-                        },
+                        onPressed: () => Navigator.pop(context),
                         child: const Text('Cancel'),
                       ),
                       TextButton(
                         onPressed: () async {
                           Navigator.pop(context);
-
-                          widget.onHideMessageLocally?.call(
-                            messageIdStr,
-                          );
-
+                          widget.onHideMessageLocally?.call(messageIdStr);
                           if (isMe && rawId != null) {
-                            MessageRepository.instance
-                                .deleteOptimisticMessage(
+                            MessageRepository.instance.deleteOptimisticMessage(
                               id: rawId,
                               isMe: isDeleteForOthers,
                             );
@@ -283,9 +243,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                         },
                         child: const Text(
                           'Delete',
-                          style: TextStyle(
-                            color: Colors.redAccent,
-                          ),
+                          style: TextStyle(color: Colors.redAccent),
                         ),
                       ),
                     ],
@@ -298,31 +256,22 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       ),
     ];
 
-    // Message bubble corner radius.
+    // Modern-style cluster corner radius
     final borderRadius = isMe
         ? BorderRadius.only(
-      topLeft: const Radius.circular(18.0),
-      topRight: Radius.circular(
-        isFirst || isSingle ? 18.0 : 4.0,
-      ),
-      bottomRight: Radius.circular(
-        isLast || isSingle ? 4.0 : 4.0,
-      ),
-      bottomLeft: const Radius.circular(18.0),
-    )
+            topLeft: const Radius.circular(18.0),
+            topRight: Radius.circular(isFirst || isSingle ? 18.0 : 4.0),
+            bottomRight: Radius.circular(isLast || isSingle ? 4.0 : 4.0),
+            bottomLeft: const Radius.circular(18.0),
+          )
         : BorderRadius.only(
-      topLeft: Radius.circular(
-        isFirst || isSingle ? 18.0 : 4.0,
-      ),
-      topRight: const Radius.circular(18.0),
-      bottomRight: const Radius.circular(18.0),
-      bottomLeft: Radius.circular(
-        isLast || isSingle ? 4.0 : 4.0,
-      ),
-    );
+            topLeft: Radius.circular(isFirst || isSingle ? 18.0 : 4.0),
+            topRight: const Radius.circular(18.0),
+            bottomRight: const Radius.circular(18.0),
+            bottomLeft: Radius.circular(isLast || isSingle ? 4.0 : 4.0),
+          );
 
-    final hasReply =
-        replyToText != null && replyToText.isNotEmpty;
+    final hasReply = replyToText != null && replyToText.isNotEmpty;
 
     return ContextMenu(
       items: menuItems,
@@ -334,31 +283,18 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.72,
         ),
-        padding: const EdgeInsets.symmetric(
-          horizontal: 14.0,
-          vertical: 8.0,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
         decoration: BoxDecoration(
           color: isHighlighted
               ? (isMe
-              ? Theme.of(context)
-              .colorScheme
-              .primary
-              .withAlpha(220)
-              : Theme.of(context)
-              .colorScheme
-              .tertiaryContainer)
+                  ? Theme.of(context).colorScheme.primary.withAlpha(220)
+                  : Theme.of(context).colorScheme.tertiaryContainer)
               : (isMe
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context)
-              .colorScheme
-              .secondaryContainer),
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.secondaryContainer),
           borderRadius: borderRadius,
           border: isHighlighted
-              ? Border.all(
-            color: Colors.yellow.shade600,
-            width: 2.0,
-          )
+              ? Border.all(color: Colors.yellow.shade600, width: 2.0)
               : null,
           boxShadow: [
             BoxShadow(
@@ -375,7 +311,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Show sender name on the first message in the cluster.
+            // Show sender name on first message of cluster
             if (!isMe && isFirst) ...[
               Text(
                 widget.cluster.username,
@@ -388,29 +324,29 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
               const SizedBox(height: 3),
             ],
 
-            // Reply preview inside the message bubble.
+            // Reply Preview Snippet inside message bubble
             if (hasReply)
               ReplyPreviewWidget(
                 username: replyToUsername ?? 'Reply',
                 text: replyToText,
                 isMe: isMe,
                 onTap: replyToId != null
-                    ? () {
-                  widget.onTapReplyPreview?.call(
-                    replyToId,
-                  );
-                }
+                    ? () => widget.onTapReplyPreview?.call(replyToId)
                     : null,
               ),
 
-            ExpandableFormattedText(
-              text: message.text,
-              isMe: isMe,
-              previewCharacters: 500,
-            ),
-
+            if (message.isMediaMessage)
+              ChatMediaMessageBubble(
+                message: message,
+                isMe: isMe,
+              )
+            else
+              ExpandableFormattedText(
+                text: message.text,
+                isMe: isMe,
+                previewCharacters: 500,
+              ),
             const SizedBox(height: 3),
-
             Align(
               alignment: AlignmentDirectional.bottomEnd,
               child: Row(
@@ -418,9 +354,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                 children: [
                   if (isMe) ...[
                     Icon(
-                      isPending
-                          ? Icons.watch_later_outlined
-                          : Icons.check,
+                      isPending ? Icons.watch_later_outlined : Icons.check,
                       size: 14,
                       color: Theme.of(context)
                           .colorScheme
@@ -433,14 +367,10 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                     formattedTime,
                     style: TextStyle(
                       color: isMe
-                          ? Theme.of(context)
-                          .colorScheme
-                          .onPrimary
-                          .withAlpha(200)
-                          : Theme.of(context)
-                          .colorScheme
-                          .onSecondaryContainer
-                          .withAlpha(200),
+                          ? Theme.of(context).colorScheme.onPrimary.withAlpha(200)
+                          : Theme.of(
+                              context,
+                            ).colorScheme.onSecondaryContainer.withAlpha(200),
                       fontSize: 9.5,
                       fontWeight: FontWeight.w400,
                     ),
@@ -454,20 +384,16 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     );
   }
 
-  // Build all message bubbles belonging to this cluster.
   Widget _buildMessageColumn(
-      BuildContext context, {
-        required bool isMe,
-      }) {
+    BuildContext context, {
+    required bool isMe,
+  }) {
     return Column(
-      crossAxisAlignment: isMe
-          ? CrossAxisAlignment.end
-          : CrossAxisAlignment.start,
+      crossAxisAlignment:
+          isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        for (int i = 0;
-        i < widget.cluster.messages.length;
-        i++)
+        for (int i = 0; i < widget.cluster.messages.length; i++)
           _buildBubble(
             context,
             widget.cluster.messages[i],
@@ -482,7 +408,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
   Widget build(BuildContext context) {
     final isMe = widget.cluster.isMe;
 
-    // Outgoing messages stay right-aligned and are not sticky.
+    // Keep outgoing messages right-aligned and do not make their layout sticky.
     if (isMe) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 3.0),
@@ -492,10 +418,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
           children: [
             Flexible(
               fit: FlexFit.loose,
-              child: _buildMessageColumn(
-                context,
-                isMe: true,
-              ),
+              child: _buildMessageColumn(context, isMe: true),
             ),
             const SizedBox(width: 8),
           ],
@@ -503,11 +426,11 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       );
     }
 
-    // Incoming avatar sticks to the top of the parent scrollable.
-    // The next StickyHeader pushes this avatar away automatically.
-    //
-    // overlapHeaders allows the bubbles to start beside the avatar.
-    // Reserve 58px for the original 8px + 42px + 8px layout.
+    // Incoming avatar sticks to the top of the parent scrollable while this
+    // message cluster is visible. The next StickyHeader pushes it away.
+    // overlapHeaders lets the first bubble start beside the avatar, rather
+    // than below it. The 58px spacer preserves the original left-hand layout:
+    // 8px outer gap + 42px avatar + 8px gap.
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3.0),
       child: StickyHeader(
@@ -519,9 +442,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
           child: Align(
             alignment: AlignmentDirectional.topStart,
             child: Padding(
-              padding: const EdgeInsetsDirectional.only(
-                start: 8.0,
-              ),
+              padding: const EdgeInsetsDirectional.only(start: 8.0),
               child: _buildAvatar(context),
             ),
           ),
@@ -533,10 +454,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
             const SizedBox(width: 58.0),
             Flexible(
               fit: FlexFit.loose,
-              child: _buildMessageColumn(
-                context,
-                isMe: false,
-              ),
+              child: _buildMessageColumn(context, isMe: false),
             ),
           ],
         ),

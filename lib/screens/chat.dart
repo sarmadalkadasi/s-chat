@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
+import 'package:s_chat/widgets/chat_media_picker.dart';
 import 'package:s_chat/widgets/chat_message.dart';
 import 'package:s_chat/widgets/new_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -15,12 +18,11 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
   final ValueNotifier<EditingMessage?> _editingNotifier =
-      ValueNotifier<EditingMessage?>(null);
+  ValueNotifier<EditingMessage?>(null);
   final ValueNotifier<ReplyingMessage?> _replyingNotifier =
-      ValueNotifier<ReplyingMessage?>(null);
+  ValueNotifier<ReplyingMessage?>(null);
 
   bool _canJump = false;
-
   static const double _jumpButtonThreshold = 200;
 
   @override
@@ -57,7 +59,37 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _signOut() async {
+  /// Queue attachments locally first. The repository uploads them to the
+  /// private Supabase Storage bucket and inserts their message once online.
+  Future<void> _queueMediaAttachments(List<ChatAttachment> attachments) async {
+    final replying = _replyingNotifier.value;
+
+    for (final attachment in attachments) {
+      try {
+        await MessageRepository.instance.sendOptimisticMedia(
+          kind: attachment.kind.name,
+          name: attachment.name,
+          path: attachment.path,
+          url: attachment.url,
+          sizeBytes: attachment.sizeBytes,
+          replyToId: replying?.id,
+          replyToUsername: replying?.username,
+          replyToText: replying?.text,
+        );
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not queue attachment: $error')),
+        );
+      }
+    }
+
+    if (replying != null && identical(_replyingNotifier.value, replying)) {
+      _replyingNotifier.value = null;
+    }
+  }
+
+  Future<void> _signOut() async {
     await Supabase.instance.client.auth.signOut();
   }
 
@@ -131,6 +163,9 @@ class _ChatScreenState extends State<ChatScreen> {
             NewMessage(
               editingNotifier: _editingNotifier,
               replyingNotifier: _replyingNotifier,
+              onMediaSelected: (attachments) {
+                unawaited(_queueMediaAttachments(attachments));
+              },
             ),
           ],
         ),

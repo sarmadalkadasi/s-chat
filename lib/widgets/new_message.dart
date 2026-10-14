@@ -1,9 +1,13 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/services/profile_cache_service.dart';
 import 'package:s_chat/utils/text_formatting_utils.dart';
+import 'package:s_chat/widgets/chat_media_picker.dart';
 import 'package:s_chat/widgets/reply_preview.dart';
+import 'package:s_chat/widgets/voice_recorder.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class EditingMessage {
@@ -14,10 +18,19 @@ class EditingMessage {
 }
 
 class NewMessage extends StatefulWidget {
-  const NewMessage({super.key, this.editingNotifier, this.replyingNotifier});
+  const NewMessage({
+    super.key,
+    this.editingNotifier,
+    this.replyingNotifier,
+    this.onMediaSelected,
+  });
 
   final ValueNotifier<EditingMessage?>? editingNotifier;
   final ValueNotifier<ReplyingMessage?>? replyingNotifier;
+
+  /// Handle media selected from the attachment sheet. Use this callback to
+  /// upload the item to storage and create the corresponding chat message.
+  final ChatMediaSelected? onMediaSelected;
 
   @override
   State<NewMessage> createState() => _NewMessageState();
@@ -99,6 +112,32 @@ class _NewMessageState extends State<NewMessage> {
 
   void _cancelReply() {
     widget.replyingNotifier?.value = null;
+  }
+
+  Future<void> _recordVoiceMessage() async {
+    FocusScope.of(context).unfocus();
+
+    final path = await VoiceRecorder.show(context);
+    if (!mounted || path == null || path.isEmpty) return;
+
+    final attachment = ChatAttachment(
+      kind: ChatAttachmentKind.audio,
+      name: path.split(Platform.pathSeparator).last,
+      path: path,
+    );
+
+    final callback = widget.onMediaSelected;
+    if (callback != null) {
+      callback([attachment]);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Voice recording created. Add onMediaSelected to upload and send it.',
+          ),
+        ),
+      );
+    }
   }
 
   void _sendMessage() async {
@@ -277,7 +316,26 @@ class _NewMessageState extends State<NewMessage> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               IconButton.filledTonal(
-                onPressed: () {},
+                onPressed: () {
+                  FocusScope.of(context).unfocus();
+                  ChatMediaPicker.show(
+                    context: context,
+                    onSelected: (attachments) {
+                      final callback = widget.onMediaSelected;
+                      if (callback != null) {
+                        callback(attachments);
+                      } else if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Media selected. Add onMediaSelected to upload and send it.',
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                  );
+                },
                 icon: const Icon(Icons.add),
               ),
               const SizedBox(width: 8),
@@ -319,14 +377,24 @@ class _NewMessageState extends State<NewMessage> {
                 height: 50,
                 width: 52,
                 child: FloatingActionButton(
-                  onPressed: _isWriting ? _sendMessage : null,
-                  backgroundColor: _isWriting
+                  onPressed: _isWriting
+                      ? _sendMessage
+                      : (isEditing ? null : _recordVoiceMessage),
+                  backgroundColor: (_isWriting || !isEditing)
                       ? Theme.of(context).colorScheme.primary
                       : Colors.grey.shade300,
-                  foregroundColor: _isWriting
+                  foregroundColor: (_isWriting || !isEditing)
                       ? Theme.of(context).colorScheme.onPrimary
                       : Theme.of(context).colorScheme.surface,
-                  child: Icon(isEditing ? Icons.check : Icons.send, size: 28),
+                  tooltip: _isWriting
+                      ? 'Send message'
+                      : (isEditing ? 'Finish editing first' : 'Record voice message'),
+                  child: Icon(
+                    isEditing
+                        ? Icons.check
+                        : (_isWriting ? Icons.send : Icons.mic_rounded),
+                    size: 28,
+                  ),
                 ),
               ),
             ],
