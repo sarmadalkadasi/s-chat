@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:s_chat/models/chat_message.dart';
@@ -13,12 +12,13 @@ import 'package:s_chat/widgets/expandable_formatted_text.dart';
 import 'package:s_chat/widgets/new_message.dart';
 import 'package:s_chat/widgets/reply_preview.dart';
 import 'package:s_chat/widgets/show_image_viewer.dart';
+import 'package:sticky_headers/sticky_headers.dart';
 
 class MessageClusterWidget extends StatefulWidget {
   const MessageClusterWidget({
     super.key,
     required this.cluster,
-    required this.scrollController,
+    this.scrollController,
     this.editingNotifier,
     this.replyingNotifier,
     this.highlightedMessageId,
@@ -28,7 +28,7 @@ class MessageClusterWidget extends StatefulWidget {
   });
 
   final MessageCluster cluster;
-  final ScrollController scrollController;
+  final ScrollController? scrollController;
   final ValueNotifier<EditingMessage?>? editingNotifier;
   final ValueNotifier<ReplyingMessage?>? replyingNotifier;
   final String? highlightedMessageId;
@@ -37,108 +37,11 @@ class MessageClusterWidget extends StatefulWidget {
   final void Function(dynamic targetMessageId)? onTapReplyPreview;
 
   @override
-  State<MessageClusterWidget> createState() => _MessageClusterWidgetState();
+  State<MessageClusterWidget> createState() =>
+      _MessageClusterWidgetState();
 }
 
 class _MessageClusterWidgetState extends State<MessageClusterWidget> {
-  double _avatarOffset = 0.0;
-
-  @override
-  void initState() {
-    super.initState();
-    if (!widget.cluster.isMe) {
-      widget.scrollController.addListener(_onScroll);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _onScroll();
-      });
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant MessageClusterWidget oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.scrollController != widget.scrollController) {
-      oldWidget.scrollController.removeListener(_onScroll);
-      if (!widget.cluster.isMe) {
-        widget.scrollController.addListener(_onScroll);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _onScroll();
-        });
-      }
-    } else if (!widget.cluster.isMe) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _onScroll();
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.scrollController.removeListener(_onScroll);
-    super.dispose();
-  }
-
-  void _onScroll() {
-    if (!mounted || widget.cluster.isMe) {
-      return;
-    }
-    final renderBox = context.findRenderObject() as RenderBox?;
-    if (renderBox == null || !renderBox.hasSize) return;
-
-    final clusterHeight = renderBox.size.height;
-    const avatarHeight = 42.0;
-    final maxOffset = (clusterHeight - avatarHeight).clamp(
-      0.0,
-      double.infinity,
-    );
-
-    if (maxOffset <= 0) {
-      if (_avatarOffset != 0.0) {
-        setState(() => _avatarOffset = 0.0);
-      }
-      return;
-    }
-
-    final viewport = RenderAbstractViewport.of(renderBox);
-    double viewportTop = 0.0;
-    double viewportBottom = MediaQuery.of(context).size.height;
-
-    if (viewport is RenderBox) {
-      final viewportBox = viewport as RenderBox;
-      if (viewportBox.hasSize) {
-        viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
-        viewportBottom = viewportTop + viewportBox.size.height;
-      }
-    } else {
-      viewportTop = MediaQuery.viewPaddingOf(context).top + kToolbarHeight;
-      viewportBottom = MediaQuery.of(context).size.height - 70;
-    }
-
-    final globalTop = renderBox.localToGlobal(Offset.zero).dy;
-    final globalBottom = globalTop + clusterHeight;
-
-    final defaultGlobalAvatarTop = globalBottom - avatarHeight;
-    final maxViewportAvatarTop = (viewportBottom - avatarHeight).clamp(
-      viewportTop,
-      double.infinity,
-    );
-    final clampedGlobalAvatarTop = defaultGlobalAvatarTop.clamp(
-      viewportTop,
-      maxViewportAvatarTop,
-    );
-
-    final targetOffset = (clampedGlobalAvatarTop - globalTop).clamp(
-      0.0,
-      maxOffset,
-    );
-
-    if ((targetOffset - _avatarOffset).abs() > 0.5) {
-      setState(() {
-        _avatarOffset = targetOffset;
-      });
-    }
-  }
-
   Widget _buildAvatarFallback(BuildContext context, String uname) {
     return Container(
       color: Theme.of(context).colorScheme.primaryContainer,
@@ -158,8 +61,9 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
   Widget _buildAvatar(BuildContext context) {
     final userImage = widget.cluster.userImage;
     final uname = widget.cluster.username;
-    final firstMessageId =
-        widget.cluster.messages.first.id ?? UniqueKey().toString();
+
+    final firstMessageId = widget.cluster.messages.first.id ??
+        UniqueKey().toString();
 
     return Container(
       width: 42,
@@ -167,12 +71,19 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       padding: const EdgeInsets.all(2.0),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.greenAccent.shade400, width: 1.5),
+        border: Border.all(
+          color: Colors.greenAccent.shade400,
+          width: 1.5,
+        ),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(100),
         onTap: () {
-          showImageViewer(context, imageUrl: userImage, title: uname);
+          showImageViewer(
+            context,
+            imageUrl: userImage,
+            title: uname,
+          );
         },
         child: Hero(
           tag: userImage.isNotEmpty
@@ -182,13 +93,19 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
             borderRadius: BorderRadius.circular(20),
             child: userImage.isNotEmpty
                 ? CachedMediaImage(
-                    imageUrl: userImage,
-                    fit: BoxFit.cover,
-                    width: 38,
-                    height: 38,
-                    placeholder: _buildAvatarFallback(context, uname),
-                    errorWidget: _buildAvatarFallback(context, uname),
-                  )
+              imageUrl: userImage,
+              fit: BoxFit.cover,
+              width: 38,
+              height: 38,
+              placeholder: _buildAvatarFallback(
+                context,
+                uname,
+              ),
+              errorWidget: _buildAvatarFallback(
+                context,
+                uname,
+              ),
+            )
                 : _buildAvatarFallback(context, uname),
           ),
         ),
@@ -203,9 +120,9 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       int totalCount,
       ) {
     final isMe = widget.cluster.isMe;
-    final isFirst = (index == 0);
-    final isLast = (index == totalCount - 1);
-    final isSingle = (totalCount == 1);
+    final isFirst = index == 0;
+    final isLast = index == totalCount - 1;
+    final isSingle = totalCount == 1;
 
     final messageText = message.text;
     final rawId = message.id;
@@ -215,23 +132,33 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     final String? replyToText = message.replyToText;
     final dynamic replyToId = message.replyToId;
 
-    final isHighlighted = (messageIdStr == widget.highlightedMessageId);
+    final isHighlighted =
+        messageIdStr == widget.highlightedMessageId;
+
     final bubbleKey = widget.messageKeys.putIfAbsent(
       messageIdStr,
           () => GlobalKey(),
     );
 
-    final bool isPending = message.id?.toString().startsWith('temp_') ?? false;
+    final bool isPending =
+        message.id?.toString().startsWith('temp_') ?? false;
 
     String formattedTime = '';
+
     if (message.createdAt != null) {
-      formattedTime = DateFormat('h:mm a').format(message.createdAt!.toLocal());
+      formattedTime = DateFormat('h:mm a').format(
+        message.createdAt!.toLocal(),
+      );
     }
 
-    // Check if message was sent within last 1 hour (60 minutes)
+    // Allow editing messages sent within the last 60 minutes.
     bool canEdit = false;
+
     if (isMe && message.createdAt != null) {
-      final difference = DateTime.now().toUtc().difference(message.createdAt!.toUtc());
+      final difference = DateTime.now()
+          .toUtc()
+          .difference(message.createdAt!.toUtc());
+
       canEdit = difference.inMinutes <= 60;
     }
 
@@ -254,7 +181,11 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
         icon: Icons.copy_rounded,
         onTap: () {
           FocusManager.instance.primaryFocus?.unfocus();
-          Clipboard.setData(ClipboardData(text: messageText));
+
+          Clipboard.setData(
+            ClipboardData(text: messageText),
+          );
+
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
@@ -286,6 +217,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
         isDestructive: true,
         onTap: () {
           bool isDeleteForOthers = false;
+
           showDialog(
             context: context,
             builder: (context) {
@@ -297,12 +229,16 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('Do you really want to delete this message?'),
+                        const Text(
+                          'Do you really want to delete this message?',
+                        ),
                         if (isMe) ...[
                           const SizedBox(height: 8),
                           CheckboxListTile(
                             contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 6),
+                            const EdgeInsets.symmetric(
+                              horizontal: 6,
+                            ),
                             value: isDeleteForOthers,
                             title: Text(
                               'Delete it for others, too',
@@ -324,15 +260,22 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                     ),
                     actions: [
                       TextButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: () {
+                          Navigator.pop(context);
+                        },
                         child: const Text('Cancel'),
                       ),
                       TextButton(
                         onPressed: () async {
                           Navigator.pop(context);
-                          widget.onHideMessageLocally?.call(messageIdStr);
+
+                          widget.onHideMessageLocally?.call(
+                            messageIdStr,
+                          );
+
                           if (isMe && rawId != null) {
-                            MessageRepository.instance.deleteOptimisticMessage(
+                            MessageRepository.instance
+                                .deleteOptimisticMessage(
                               id: rawId,
                               isMe: isDeleteForOthers,
                             );
@@ -340,7 +283,9 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                         },
                         child: const Text(
                           'Delete',
-                          style: TextStyle(color: Colors.redAccent),
+                          style: TextStyle(
+                            color: Colors.redAccent,
+                          ),
                         ),
                       ),
                     ],
@@ -353,22 +298,31 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
       ),
     ];
 
-    // Modern-style cluster corner radius
+    // Message bubble corner radius.
     final borderRadius = isMe
         ? BorderRadius.only(
       topLeft: const Radius.circular(18.0),
-      topRight: Radius.circular(isFirst || isSingle ? 18.0 : 4.0),
-      bottomRight: Radius.circular(isLast || isSingle ? 4.0 : 4.0),
+      topRight: Radius.circular(
+        isFirst || isSingle ? 18.0 : 4.0,
+      ),
+      bottomRight: Radius.circular(
+        isLast || isSingle ? 4.0 : 4.0,
+      ),
       bottomLeft: const Radius.circular(18.0),
     )
         : BorderRadius.only(
-      topLeft: Radius.circular(isFirst || isSingle ? 18.0 : 4.0),
+      topLeft: Radius.circular(
+        isFirst || isSingle ? 18.0 : 4.0,
+      ),
       topRight: const Radius.circular(18.0),
       bottomRight: const Radius.circular(18.0),
-      bottomLeft: Radius.circular(isLast || isSingle ? 4.0 : 4.0),
+      bottomLeft: Radius.circular(
+        isLast || isSingle ? 4.0 : 4.0,
+      ),
     );
 
-    final hasReply = replyToText != null && replyToText.isNotEmpty;
+    final hasReply =
+        replyToText != null && replyToText.isNotEmpty;
 
     return ContextMenu(
       items: menuItems,
@@ -380,18 +334,31 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.72,
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 14.0,
+          vertical: 8.0,
+        ),
         decoration: BoxDecoration(
           color: isHighlighted
               ? (isMe
-              ? Theme.of(context).colorScheme.primary.withAlpha(220)
-              : Theme.of(context).colorScheme.tertiaryContainer)
+              ? Theme.of(context)
+              .colorScheme
+              .primary
+              .withAlpha(220)
+              : Theme.of(context)
+              .colorScheme
+              .tertiaryContainer)
               : (isMe
               ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.secondaryContainer),
+              : Theme.of(context)
+              .colorScheme
+              .secondaryContainer),
           borderRadius: borderRadius,
           border: isHighlighted
-              ? Border.all(color: Colors.yellow.shade600, width: 2.0)
+              ? Border.all(
+            color: Colors.yellow.shade600,
+            width: 2.0,
+          )
               : null,
           boxShadow: [
             BoxShadow(
@@ -408,7 +375,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Show sender name on first message of cluster
+            // Show sender name on the first message in the cluster.
             if (!isMe && isFirst) ...[
               Text(
                 widget.cluster.username,
@@ -421,14 +388,18 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
               const SizedBox(height: 3),
             ],
 
-            // Reply Preview Snippet inside message bubble
+            // Reply preview inside the message bubble.
             if (hasReply)
               ReplyPreviewWidget(
                 username: replyToUsername ?? 'Reply',
                 text: replyToText,
                 isMe: isMe,
                 onTap: replyToId != null
-                    ? () => widget.onTapReplyPreview?.call(replyToId)
+                    ? () {
+                  widget.onTapReplyPreview?.call(
+                    replyToId,
+                  );
+                }
                     : null,
               ),
 
@@ -437,7 +408,9 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
               isMe: isMe,
               previewCharacters: 500,
             ),
+
             const SizedBox(height: 3),
+
             Align(
               alignment: AlignmentDirectional.bottomEnd,
               child: Row(
@@ -445,7 +418,9 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                 children: [
                   if (isMe) ...[
                     Icon(
-                      isPending ? Icons.watch_later_outlined : Icons.check,
+                      isPending
+                          ? Icons.watch_later_outlined
+                          : Icons.check,
                       size: 14,
                       color: Theme.of(context)
                           .colorScheme
@@ -458,15 +433,18 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
                     formattedTime,
                     style: TextStyle(
                       color: isMe
-                          ? Theme.of(context).colorScheme.onPrimary.withAlpha(200)
-                          : Theme.of(
-                        context,
-                      ).colorScheme.onSecondaryContainer.withAlpha(200),
+                          ? Theme.of(context)
+                          .colorScheme
+                          .onPrimary
+                          .withAlpha(200)
+                          : Theme.of(context)
+                          .colorScheme
+                          .onSecondaryContainer
+                          .withAlpha(200),
                       fontSize: 9.5,
                       fontWeight: FontWeight.w400,
                     ),
                   ),
-
                 ],
               ),
             ),
@@ -476,58 +454,92 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
     );
   }
 
+  // Build all message bubbles belonging to this cluster.
+  Widget _buildMessageColumn(
+      BuildContext context, {
+        required bool isMe,
+      }) {
+    return Column(
+      crossAxisAlignment: isMe
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (int i = 0;
+        i < widget.cluster.messages.length;
+        i++)
+          _buildBubble(
+            context,
+            widget.cluster.messages[i],
+            i,
+            widget.cluster.messages.length,
+          ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final isMe = widget.cluster.isMe;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment:
-        isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          // Avatar for incoming messages.
-          if (!isMe) ...[
-            const SizedBox(width: 8),
-            SizedBox(
-              width: 42,
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Transform.translate(
-                  offset: Offset(0, _avatarOffset),
-                  child: _buildAvatar(context),
-                ),
+    // Outgoing messages stay right-aligned and are not sticky.
+    if (isMe) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3.0),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Flexible(
+              fit: FlexFit.loose,
+              child: _buildMessageColumn(
+                context,
+                isMe: true,
               ),
             ),
             const SizedBox(width: 8),
           ],
+        ),
+      );
+    }
 
-          // Message bubbles in this cluster.
-          Flexible(
-            fit: FlexFit.loose,
-            child: Column(
-              crossAxisAlignment: isMe
-                  ? CrossAxisAlignment.end
-                  : CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (int i = 0;
-                i < widget.cluster.messages.length;
-                i++)
-                  _buildBubble(
-                    context,
-                    widget.cluster.messages[i],
-                    i,
-                    widget.cluster.messages.length,
-                  ),
-              ],
+    // Incoming avatar sticks to the top of the parent scrollable.
+    // The next StickyHeader pushes this avatar away automatically.
+    //
+    // overlapHeaders allows the bubbles to start beside the avatar.
+    // Reserve 58px for the original 8px + 42px + 8px layout.
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3.0),
+      child: StickyHeader(
+        controller: widget.scrollController,
+        overlapHeaders: true,
+        header: SizedBox(
+          width: double.infinity,
+          height: 42,
+          child: Align(
+            alignment: AlignmentDirectional.topStart,
+            child: Padding(
+              padding: const EdgeInsetsDirectional.only(
+                start: 8.0,
+              ),
+              child: _buildAvatar(context),
             ),
           ),
-
-          if (isMe) const SizedBox(width: 8),
-        ],
+        ),
+        content: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.start,
+          children: [
+            const SizedBox(width: 58.0),
+            Flexible(
+              fit: FlexFit.loose,
+              child: _buildMessageColumn(
+                context,
+                isMe: false,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

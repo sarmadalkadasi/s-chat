@@ -152,7 +152,12 @@ class _ExpandableFormattedTextState
               ),
               child: Text(
                 _expanded ? '...Show less' : '...Read more',
-                style: Theme.of(context).textTheme.bodyMedium!.copyWith(color: Colors.tealAccent),
+                style: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                      color: widget.isMe
+                          ? Theme.of(context).colorScheme.onPrimary.withAlpha(200)
+                          : Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.bold,
+                    ),
               ),
             ),
           ),
