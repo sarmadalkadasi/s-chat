@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/chat_item.dart';
 import 'package:s_chat/models/replying_message.dart';
+import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/widgets/chat/chat_list.dart';
 import 'package:s_chat/widgets/chat/chat_media_picker.dart';
@@ -33,6 +34,26 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+
+    LocalNotificationManager.setOnNotificationTap((chatId) async {
+      final availableChats =
+          await MessageRepository.instance.fetchAvailableChats();
+      final target = availableChats.firstWhere(
+        (c) => c.id == chatId,
+        orElse: () => ChatItem(
+          id: chatId,
+          name: 'Chat',
+          avatarUrl: '',
+          lastMessage: '',
+        ),
+      );
+      if (mounted) {
+        setState(() {
+          _selectedChat = target;
+          LocalNotificationManager.setActiveChatId(target.id);
+        });
+      }
+    });
   }
 
   @override
@@ -523,6 +544,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!didPop && activeChat != null) {
           setState(() {
             _selectedChat = null;
+            LocalNotificationManager.setActiveChatId(null);
           });
         }
       },
@@ -534,6 +556,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   onPressed: () {
                     setState(() {
                       _selectedChat = null;
+                      LocalNotificationManager.setActiveChatId(null);
                     });
                   },
                 )
@@ -779,6 +802,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   onSelectChat: (chat) {
                     setState(() {
                       _selectedChat = chat;
+                      LocalNotificationManager.setActiveChatId(chat.id);
                     });
                   },
                 )

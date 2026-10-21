@@ -2,7 +2,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 class LocalNotificationManager {
   static final FlutterLocalNotificationsPlugin _notificationsPlugin =
-  FlutterLocalNotificationsPlugin();
+      FlutterLocalNotificationsPlugin();
 
   static const AndroidNotificationChannel _channel = AndroidNotificationChannel(
     'local_chat_channel',
@@ -11,9 +11,22 @@ class LocalNotificationManager {
     importance: Importance.max,
   );
 
+  static String? _activeChatId;
+  static void Function(String chatId)? _onNotificationTap;
+
+  /// Sets the currently active chat ID to suppress notifications for the open screen
+  static void setActiveChatId(String? chatId) {
+    _activeChatId = chatId;
+  }
+
+  /// Register callback when user taps a notification
+  static void setOnNotificationTap(void Function(String chatId) onTap) {
+    _onNotificationTap = onTap;
+  }
+
   static Future<void> initialize() async {
     const AndroidInitializationSettings androidSettings =
-    AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('@mipmap/ic_launcher');
 
     const DarwinInitializationSettings iosSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
@@ -26,26 +39,43 @@ class LocalNotificationManager {
       iOS: iosSettings,
     );
 
-    // FIX 1: Removed 'settings:' because it uses positional parameters
-    await _notificationsPlugin.initialize(settings: settings);
+    await _notificationsPlugin.initialize(
+      settings: settings,
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        final payload = response.payload;
+        if (payload != null && payload.isNotEmpty) {
+          _onNotificationTap?.call(payload);
+        }
+      },
+    );
 
-    // FIX 2: Corrected the platform implementation class name (removed "Local")
     await _notificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(_channel);
 
-    // FIX 3: Corrected the platform implementation class name here as well
     await _notificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
   }
 
-  // 4. Call this method to show the actual popup banner
-  static void showNotification({required String title, required String body}) {
-    // FIX 4: Removed named parameter labels ('id:', 'title:', 'body:', 'notificationDetails:')
-    // because show() uses standard positional arguments
-    _notificationsPlugin.show(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+  /// Shows notification banner unless the user is actively viewing the same chat
+  static Future<void> showNotification({
+    required String title,
+    required String body,
+    String? chatId,
+  }) async {
+    // Suppress notification if user is currently inside the same chat
+    if (chatId != null && _activeChatId == chatId) {
+      return;
+    }
+
+    final int notificationId =
+        DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF;
+
+    await _notificationsPlugin.show(
+      id: notificationId,
       title: title,
       body: body,
       notificationDetails: NotificationDetails(
@@ -62,6 +92,7 @@ class LocalNotificationManager {
           presentBadge: true,
         ),
       ),
+      payload: chatId,
     );
   }
 }

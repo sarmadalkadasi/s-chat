@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/s_chat.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
@@ -49,15 +50,16 @@ void listenToIncomingMessages() {
               final latestMessage = messages.first;
               final currentUserId =
                   Supabase.instance.client.auth.currentUser?.id;
-              final String senderId = latestMessage['user_id'] ?? '';
-              final String messageText = latestMessage['text'] ?? '';
-              final String username = latestMessage['username'] ?? 'Anonymous';
+
+              final chatMsg = ChatMessage.fromMap(latestMessage);
 
               // Notify only if someone else sent it
-              if (senderId != currentUserId && messageText.isNotEmpty) {
+              if (chatMsg.userId != currentUserId &&
+                  chatMsg.displayText.isNotEmpty) {
                 LocalNotificationManager.showNotification(
-                  title: username,
-                  body: messageText,
+                  title: chatMsg.username,
+                  body: chatMsg.displayText,
+                  chatId: chatMsg.userId,
                 );
               }
             },
