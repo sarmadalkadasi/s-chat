@@ -5,7 +5,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/services/message_repository.dart';
-import 'package:s_chat/widgets/image_viewer.dart';
+import 'package:s_chat/widgets/chat/image_viewer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Renders a chat attachment encoded in [ChatMessage.text].
@@ -277,7 +277,7 @@ class _ChatMediaMessageBubbleState extends State<ChatMediaMessageBubble> {
               width: 240,
               height: 190,
               fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) =>
+              errorBuilder: (context, error, stackTrace) =>
                   _unavailableTile(Icons.image_rounded, 'Photo'),
             ),
           ),
@@ -309,7 +309,7 @@ class _ChatMediaMessageBubbleState extends State<ChatMediaMessageBubble> {
             width: 240,
             height: 190,
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) =>
+            errorBuilder: (context, error, stackTrace) =>
                 _unavailableTile(Icons.image_rounded, 'Photo unavailable'),
           ),
         );

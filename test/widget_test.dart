@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:s_chat/widgets/message_bubble.dart';
+import 'package:s_chat/widgets/message/message_bubble.dart';
 
 void main() {
   testWidgets('MessageBubble renders message text and username', (

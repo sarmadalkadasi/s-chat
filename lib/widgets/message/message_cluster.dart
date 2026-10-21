@@ -6,13 +6,13 @@ import 'package:s_chat/models/menu_item.dart';
 import 'package:s_chat/models/message_cluster.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
-import 'package:s_chat/widgets/cached_media_image.dart';
-import 'package:s_chat/widgets/chat_media_message.dart';
-import 'package:s_chat/widgets/context_menu.dart';
-import 'package:s_chat/widgets/expandable_formatted_text.dart';
-import 'package:s_chat/widgets/new_message.dart';
-import 'package:s_chat/widgets/reply_preview.dart';
-import 'package:s_chat/widgets/show_user_image_viewer.dart';
+import 'package:s_chat/widgets/chat/cached_media_image.dart';
+import 'package:s_chat/widgets/chat/chat_media_message.dart';
+import 'package:s_chat/widgets/text_formatter/context_menu.dart';
+import 'package:s_chat/widgets/message/expandable_formatted_text.dart';
+import 'package:s_chat/widgets/chat/new_message.dart';
+import 'package:s_chat/widgets/chat/reply_preview.dart';
+import 'package:s_chat/widgets/user/show_user_image_viewer.dart';
 import 'package:sticky_headers/sticky_headers.dart';
 
 class MessageClusterWidget extends StatefulWidget {
@@ -342,7 +342,7 @@ class _MessageClusterWidgetState extends State<MessageClusterWidget> {
               )
             else
               ExpandableFormattedText(
-                text: message.text,
+                text: message.cleanText,
                 isMe: isMe,
                 previewCharacters: 500,
               ),

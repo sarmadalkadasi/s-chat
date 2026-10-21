@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/models/message_cluster.dart';
-import 'package:s_chat/widgets/list_dividers.dart';
-import 'package:s_chat/widgets/message_cluster.dart';
+import 'package:s_chat/widgets/chat/list_dividers.dart';
+import 'package:s_chat/widgets/message/message_cluster.dart';
 import 'package:sticky_headers/sticky_headers.dart';
 
 void main() {

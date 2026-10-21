@@ -1,13 +1,14 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:s_chat/models/chat_item.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/services/profile_cache_service.dart';
 import 'package:s_chat/utils/text_formatting_utils.dart';
-import 'package:s_chat/widgets/chat_media_picker.dart';
-import 'package:s_chat/widgets/reply_preview.dart';
-import 'package:s_chat/widgets/voice_recorder.dart';
+import 'package:s_chat/widgets/chat/chat_media_picker.dart';
+import 'package:s_chat/widgets/chat/reply_preview.dart';
+import 'package:s_chat/widgets/chat/voice_recorder.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class EditingMessage {
@@ -23,10 +24,12 @@ class NewMessage extends StatefulWidget {
     this.editingNotifier,
     this.replyingNotifier,
     this.onMediaSelected,
+    this.activeChat,
   });
 
   final ValueNotifier<EditingMessage?>? editingNotifier;
   final ValueNotifier<ReplyingMessage?>? replyingNotifier;
+  final ChatItem? activeChat;
 
   /// Handle media selected from the attachment sheet. Use this callback to
   /// upload the item to storage and create the corresponding chat message.
@@ -235,11 +238,29 @@ class _NewMessageState extends State<NewMessage> {
       userImage: userImage,
     );
 
+    final activeChat = widget.activeChat;
+    final String? chatId;
+    final String? recipientId;
+    if (activeChat != null) {
+      if (activeChat.isGroup) {
+        chatId = activeChat.id;
+        recipientId = null;
+      } else {
+        chatId = MessageRepository.getDirectChatId(userId, activeChat.id);
+        recipientId = activeChat.id;
+      }
+    } else {
+      chatId = null;
+      recipientId = null;
+    }
+
     MessageRepository.instance.sendOptimisticMessage(
       text: enteredMessage,
       userId: userId,
       username: username,
       userImage: userImage,
+      chatId: chatId,
+      recipientId: recipientId,
       replyToId: replying?.id,
       replyToUsername: replying?.username,
       replyToText: replying?.text,
@@ -388,7 +409,9 @@ class _NewMessageState extends State<NewMessage> {
                       : Theme.of(context).colorScheme.surface,
                   tooltip: _isWriting
                       ? 'Send message'
-                      : (isEditing ? 'Finish editing first' : 'Record voice message'),
+                      : (isEditing
+                            ? 'Finish editing first'
+                            : 'Record voice message'),
                   child: Icon(
                     isEditing
                         ? Icons.check

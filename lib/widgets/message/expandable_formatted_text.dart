@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:s_chat/widgets/formatted_text_renderer.dart';
+import 'package:s_chat/widgets/text_formatter/formatted_text_renderer.dart';
 
 class ExpandableFormattedText extends StatefulWidget {
   const ExpandableFormattedText({

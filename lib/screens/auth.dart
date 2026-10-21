@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:s_chat/widgets/user_image_picker.dart';
+import 'package:s_chat/widgets/user/user_image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 final _supabase = Supabase.instance.client;

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:s_chat/widgets/cached_media_image.dart';
-import 'package:s_chat/widgets/image_viewer.dart';
+import 'package:s_chat/widgets/chat/cached_media_image.dart';
+import 'package:s_chat/widgets/chat/image_viewer.dart';
 
 void showUserImageViewer(
   BuildContext context, {

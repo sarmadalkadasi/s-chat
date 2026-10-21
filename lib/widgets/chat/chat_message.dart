@@ -1,14 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:s_chat/models/chat_item.dart';
 import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/models/message_cluster.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/services/profile_cache_service.dart';
 
-import 'package:s_chat/widgets/list_dividers.dart';
-import 'package:s_chat/widgets/message_cluster.dart';
-import 'package:s_chat/widgets/new_message.dart';
+import 'package:s_chat/widgets/chat/list_dividers.dart';
+import 'package:s_chat/widgets/message/message_cluster.dart';
+import 'package:s_chat/widgets/chat/new_message.dart';
 
 import 'package:sticky_headers/sticky_headers.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -39,11 +40,13 @@ class ChatMessages extends StatefulWidget {
     required this.scrollController,
     this.editingNotifier,
     this.replyingNotifier,
+    this.activeChat,
   });
 
   final ScrollController scrollController;
   final ValueNotifier<EditingMessage?>? editingNotifier;
   final ValueNotifier<ReplyingMessage?>? replyingNotifier;
+  final ChatItem? activeChat;
 
   @override
   State<ChatMessages> createState() => _ChatMessagesState();
@@ -380,13 +383,19 @@ class _ChatMessagesState extends State<ChatMessages> {
           return const Center(child: CircularProgressIndicator());
         }
 
-        if (chatSnapshot.hasError ||
-            !chatSnapshot.hasData ||
-            chatSnapshot.data!.isEmpty) {
+        final allDocs = chatSnapshot.data!;
+        final chatDocs = widget.activeChat == null
+            ? allDocs
+            : allDocs.where((m) => m.matchesChat(
+                activeChatId: widget.activeChat!.id,
+                isGroup: widget.activeChat!.isGroup,
+                currentUserId: authenticatedUserId,
+              )).toList();
+
+        if (chatDocs.isEmpty) {
           return const Center(child: Text('No messages found...'));
         }
 
-        final chatDocs = chatSnapshot.data!;
         _checkSuperCleaning(chatDocs);
         _handleScroll(chatDocs, authenticatedUserId);
 

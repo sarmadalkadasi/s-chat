@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:vector_math/vector_math_64.dart' as vector;
 
 enum ImageType { assets, network, file }
 
@@ -39,9 +40,9 @@ class _ImageViewerState extends State<ImageViewer> {
     final center = Offset(viewportSize.width / 2, viewportSize.height / 2);
 
     final matrix = Matrix4.identity()
-      ..translate(center.dx, center.dy)
-      ..scale(actualFactor)
-      ..translate(-center.dx, -center.dy)
+      ..translateByVector3(vector.Vector3(center.dx, center.dy, 0.0))
+      ..scaleByVector3(vector.Vector3(actualFactor, actualFactor, 1.0))
+      ..translateByVector3(vector.Vector3(-center.dx, -center.dy, 0.0))
       ..multiply(_transformationController.value);
 
     _transformationController.value = matrix;

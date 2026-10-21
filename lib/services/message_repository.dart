@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:s_chat/models/chat_item.dart';
 import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/services/profile_cache_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -47,6 +48,7 @@ class MessageRepository {
   bool _isProcessingOutbox = false;
   bool _isOnline = true;
   DateTime? _lastReadTimestamp;
+  final List<ChatItem> _customGroups = [];
 
   Stream<List<ChatMessage>> get messagesStream => _messagesController.stream;
   Stream<bool> get isOnlineStream => _isOnlineController.stream;
@@ -166,6 +168,182 @@ class MessageRepository {
     } catch (_) {}
   }
 
+  static String getDirectChatId(String user1, String user2) {
+    return user1.compareTo(user2) <= 0 ? 'dm_${user1}_$user2' : 'dm_${user2}_$user1';
+  }
+
+  Future<File> get _usersCacheFile async {
+    final dir = await getApplicationDocumentsDirectory();
+    final cacheDir = Directory('${dir.path}/s_chat_data');
+    if (!await cacheDir.exists()) {
+      await cacheDir.create(recursive: true);
+    }
+    return File('${cacheDir.path}/users_cache.json');
+  }
+
+  Future<void> _saveUsersToDiskCache(List<Map<String, dynamic>> users) async {
+    try {
+      final file = await _usersCacheFile;
+      await file.writeAsString(json.encode(users));
+    } catch (_) {}
+  }
+
+  Future<List<Map<String, dynamic>>> _loadUsersFromDiskCache() async {
+    try {
+      final file = await _usersCacheFile;
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        if (content.isNotEmpty) {
+          final List<dynamic> list = json.decode(content);
+          return list.cast<Map<String, dynamic>>();
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  /// Fetches available chats (users & groups) from Supabase and pairs with latest messages
+  Future<List<ChatItem>> fetchAvailableChats() async {
+    final List<ChatItem> chats = [];
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? '';
+
+    List<Map<String, dynamic>> usersData = [];
+
+    try {
+      final response = await Supabase.instance.client
+          .from('users')
+          .select('id, username, image_url');
+
+      final List<dynamic> rawList = response as List<dynamic>;
+      usersData = rawList.map((e) => Map<String, dynamic>.from(e)).toList();
+      await _saveUsersToDiskCache(usersData);
+    } catch (e) {
+      debugPrint('Offline or error fetching users from Supabase: $e');
+      usersData = await _loadUsersFromDiskCache();
+
+      final Map<String, Map<String, dynamic>> extractedUsers = {
+        for (final u in usersData) u['id'].toString(): u,
+      };
+
+      for (final m in _messages) {
+        if (m.userId.isNotEmpty &&
+            m.userId != currentUserId &&
+            !extractedUsers.containsKey(m.userId)) {
+          extractedUsers[m.userId] = {
+            'id': m.userId,
+            'username': m.username.isNotEmpty ? m.username : 'Anonymous',
+            'image_url': m.userImage,
+          };
+        }
+      }
+
+      usersData = extractedUsers.values.toList();
+    }
+
+    for (final userData in usersData) {
+      final id = userData['id']?.toString() ?? '';
+      if (id == currentUserId || id.isEmpty) continue;
+
+      final username = userData['username']?.toString() ?? 'Anonymous';
+      final imageUrl = userData['image_url']?.toString() ?? '';
+
+      ChatMessage? lastMsg;
+      for (int i = _messages.length - 1; i >= 0; i--) {
+        final m = _messages[i];
+        if (m.matchesChat(
+          activeChatId: id,
+          isGroup: false,
+          currentUserId: currentUserId,
+        )) {
+          lastMsg = m;
+          break;
+        }
+      }
+
+      chats.add(
+        ChatItem(
+          id: id,
+          name: username,
+          avatarUrl: imageUrl,
+          lastMessage: lastMsg?.displayText ?? 'Tap to start chatting',
+          lastMessageTime: lastMsg?.createdAt,
+          unreadCount: 0,
+          isGroup: false,
+          isOnline: _isOnline,
+        ),
+      );
+    }
+
+    for (final group in _customGroups) {
+      if (!chats.any((c) => c.id == group.id)) {
+        ChatMessage? lastMsg;
+        for (int i = _messages.length - 1; i >= 0; i--) {
+          final m = _messages[i];
+          if (m.matchesChat(
+            activeChatId: group.id,
+            isGroup: true,
+            currentUserId: currentUserId,
+          )) {
+            lastMsg = m;
+            break;
+          }
+        }
+
+        chats.insert(
+          0,
+          group.copyWith(
+            lastMessage: lastMsg?.displayText ?? group.lastMessage,
+            lastMessageTime: lastMsg?.createdAt ?? group.lastMessageTime,
+          ),
+        );
+      }
+    }
+
+    chats.sort((a, b) {
+      if (a.lastMessageTime == null) return 1;
+      if (b.lastMessageTime == null) return -1;
+      return b.lastMessageTime!.compareTo(a.lastMessageTime!);
+    });
+
+    return chats;
+  }
+
+  /// Creates a new custom group chat
+  Future<ChatItem> createGroup({required String groupName}) async {
+    final newGroup = ChatItem(
+      id: 'group_${DateTime.now().millisecondsSinceEpoch}',
+      name: groupName.trim().isEmpty ? 'New Group' : groupName.trim(),
+      avatarUrl: '',
+      lastMessage: 'Group created',
+      lastMessageTime: DateTime.now(),
+      unreadCount: 0,
+      isGroup: true,
+      isOnline: true,
+    );
+
+    _customGroups.insert(0, newGroup);
+    return newGroup;
+  }
+
+  /// Clears local messages view and cache for the conversation
+  Future<void> clearConversationMessages({
+    String? activeChatId,
+    bool isGroup = false,
+    String? currentUserId,
+  }) async {
+    if (activeChatId != null && currentUserId != null) {
+      _messages.removeWhere((m) => m.matchesChat(
+            activeChatId: activeChatId,
+            isGroup: isGroup,
+            currentUserId: currentUserId,
+          ));
+    } else {
+      _messages.clear();
+    }
+    _messagesController.add(List.unmodifiable(_messages));
+    await _saveToDiskCache();
+  }
+
   /// Initialize cache/outbox once. Concurrent callers await the same future,
   /// preventing a newly queued item from racing against loading the old outbox.
   Future<void> init() {
@@ -223,6 +401,8 @@ class MessageRepository {
         'reply_to_id': m.replyToId,
         'reply_to_username': m.replyToUsername,
         'reply_to_text': m.replyToText,
+        'chat_id': m.chatId,
+        'recipient_id': m.recipientId,
       })
           .toList();
       await file.writeAsString(json.encode(jsonList));
@@ -345,20 +525,29 @@ class MessageRepository {
     required String userId,
     required String username,
     required String userImage,
+    String? chatId,
+    String? recipientId,
     dynamic replyToId,
     String? replyToUsername,
     String? replyToText,
   }) async {
     final tempId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
     final now = DateTime.now().toUtc();
+    final encodedText = ChatMessage.encodeChatText(
+      text: text,
+      chatId: chatId,
+      recipientId: recipientId,
+    );
 
     final optimisticMsg = ChatMessage(
       id: tempId,
       userId: userId,
-      text: text,
+      text: encodedText,
       username: username,
       userImage: userImage,
       createdAt: now,
+      chatId: chatId,
+      recipientId: recipientId,
       replyToId: replyToId,
       replyToUsername: replyToUsername,
       replyToText: replyToText,
@@ -372,9 +561,11 @@ class MessageRepository {
     final outboxItem = {
       'action': 'insert',
       'temp_id': tempId,
+      'chat_id': chatId,
+      'recipient_id': recipientId,
       'data': {
         'user_id': userId,
-        'text': text,
+        'text': encodedText,
         'username': username,
         'user_image': userImage,
         'created_at': now.toIso8601String(),
@@ -405,6 +596,8 @@ class MessageRepository {
     String? path,
     String? url,
     int? sizeBytes,
+    String? chatId,
+    String? recipientId,
     dynamic replyToId,
     String? replyToUsername,
     String? replyToText,
@@ -463,10 +656,12 @@ class MessageRepository {
       'kind': kind,
       'name': name,
       'status': 'pending',
-      if (durablePath != null) 'local_path': durablePath,
-      if (url != null) 'url': url,
-      if (storagePath != null) 'storage_path': storagePath,
-      if (sizeBytes != null) 'size_bytes': sizeBytes,
+      'local_path': ?durablePath,
+      'url': ?url,
+      'storage_path': ?storagePath,
+      'size_bytes': ?sizeBytes,
+      'chat_id': ?chatId,
+      'recipient_id': ?recipientId,
     };
     final encodedText = ChatMessage.encodeMediaText(localPayload);
 
@@ -477,6 +672,8 @@ class MessageRepository {
       username: username,
       userImage: userImage,
       createdAt: createdAt,
+      chatId: chatId,
+      recipientId: recipientId,
       replyToId: replyToId,
       replyToUsername: replyToUsername,
       replyToText: replyToText,
@@ -496,6 +693,8 @@ class MessageRepository {
       'storage_path': storagePath,
       'url': url,
       'size_bytes': sizeBytes,
+      'chat_id': chatId,
+      'recipient_id': recipientId,
       'uploaded': false,
       'data': {
         'user_id': userId,
@@ -588,16 +787,23 @@ class MessageRepository {
 
     if (index != -1) {
       final oldMsg = _messages[index];
+      final encodedText = ChatMessage.encodeChatText(
+        text: newText,
+        chatId: oldMsg.chatId,
+        recipientId: oldMsg.recipientId,
+      );
       final updatedMsg = ChatMessage(
         id: oldMsg.id,
         userId: oldMsg.userId,
-        text: newText,
+        text: encodedText,
         username: oldMsg.username,
         userImage: oldMsg.userImage,
         createdAt: oldMsg.createdAt,
         replyToId: oldMsg.replyToId,
         replyToUsername: oldMsg.replyToUsername,
         replyToText: oldMsg.replyToText,
+        chatId: oldMsg.chatId,
+        recipientId: oldMsg.recipientId,
       );
 
       // 1. Instantly update local list (0ms delay)
@@ -609,7 +815,7 @@ class MessageRepository {
       _outbox.add({
         'action': 'update',
         'id': id,
-        'data': {'text': newText},
+        'data': {'text': encodedText},
       });
       await _saveOutboxToDisk();
 
@@ -738,9 +944,12 @@ class MessageRepository {
             'kind': kind,
             'name': name,
             'status': 'sent',
-            if (kind == 'url' && originalUrl != null) 'url': originalUrl,
-            if (storagePath != null) 'storage_path': storagePath,
+            if (kind == 'url') 'url': ?originalUrl,
+            'storage_path': ?storagePath,
             if (item['size_bytes'] is int) 'size_bytes': item['size_bytes'],
+            if (item['chat_id'] != null) 'chat_id': item['chat_id'],
+            if (item['recipient_id'] != null)
+              'recipient_id': item['recipient_id'],
           };
           insertData['text'] = ChatMessage.encodeMediaText(serverPayload);
           _setMediaSyncStatus(tempId, MediaSyncPhase.savingMessage);
