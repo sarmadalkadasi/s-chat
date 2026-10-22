@@ -5,10 +5,7 @@ import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/widgets/chat/cached_media_image.dart';
 
 class ChatList extends StatefulWidget {
-  const ChatList({
-    super.key,
-    this.onSelectChat,
-  });
+  const ChatList({super.key, this.onSelectChat});
 
   final void Function(ChatItem chat)? onSelectChat;
 
@@ -55,7 +52,7 @@ class _ChatListState extends State<ChatList> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    if (chat.isGroup) {
+    if (chat.isGroup && chat.avatarUrl.trim().isEmpty) {
       return Container(
         width: 50,
         height: 50,
@@ -83,10 +80,7 @@ class _ChatListState extends State<ChatList> {
           padding: const EdgeInsets.all(2.0),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            border: Border.all(
-              color: Colors.greenAccent.shade400,
-              width: 1.5,
-            ),
+            border: Border.all(color: Colors.greenAccent.shade400, width: 1.5),
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(25),
@@ -112,10 +106,7 @@ class _ChatListState extends State<ChatList> {
               decoration: BoxDecoration(
                 color: Colors.tealAccent.shade400,
                 shape: BoxShape.circle,
-                border: Border.all(
-                  color: colorScheme.surface,
-                  width: 2,
-                ),
+                border: Border.all(color: colorScheme.surface, width: 2),
               ),
             ),
           ),
@@ -162,7 +153,9 @@ class _ChatListState extends State<ChatList> {
               hintText: 'Search chats & groups...',
               prefixIcon: const Icon(Icons.search_rounded, size: 20),
               filled: true,
-              fillColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+              fillColor: colorScheme.surfaceContainerHighest.withValues(
+                alpha: 0.6,
+              ),
               contentPadding: const EdgeInsets.symmetric(
                 vertical: 10.0,
                 horizontal: 16.0,
@@ -205,9 +198,9 @@ class _ChatListState extends State<ChatList> {
                     ? allChats
                     : allChats.where((chat) {
                         return chat.name.toLowerCase().contains(_searchQuery) ||
-                            chat.lastMessage
-                                .toLowerCase()
-                                .contains(_searchQuery);
+                            chat.lastMessage.toLowerCase().contains(
+                              _searchQuery,
+                            );
                       }).toList();
 
                 if (filteredChats.isEmpty) {
@@ -218,7 +211,9 @@ class _ChatListState extends State<ChatList> {
                         Icon(
                           Icons.chat_bubble_outline_rounded,
                           size: 48,
-                          color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                          color: colorScheme.onSurfaceVariant.withValues(
+                            alpha: 0.5,
+                          ),
                         ),
                         const SizedBox(height: 12),
                         Text(
@@ -246,8 +241,9 @@ class _ChatListState extends State<ChatList> {
                   ),
                   itemBuilder: (context, index) {
                     final chat = filteredChats[index];
-                    final formattedTime =
-                        _formatTimestamp(chat.lastMessageTime);
+                    final formattedTime = _formatTimestamp(
+                      chat.lastMessageTime,
+                    );
 
                     return ListTile(
                       contentPadding: const EdgeInsets.symmetric(
@@ -269,17 +265,17 @@ class _ChatListState extends State<ChatList> {
                           ),
                           if (formattedTime.isNotEmpty) ...[
                             const SizedBox(width: 8),
-                            Text(
-                              formattedTime,
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: chat.unreadCount > 0
-                                    ? colorScheme.primary
-                                    : colorScheme.onSurfaceVariant,
-                                fontWeight: chat.unreadCount > 0
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
+                              Text(
+                                formattedTime,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: chat.unreadCount > 0
+                                      ? colorScheme.primary
+                                      : colorScheme.onSurfaceVariant,
+                                  fontWeight: chat.unreadCount > 0
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
                               ),
-                            ),
                           ],
                         ],
                       ),

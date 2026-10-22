@@ -8,6 +8,8 @@ class ChatItem {
   final bool isGroup;
   final bool isOnline;
   final bool isPrivate;
+  final String ownerId;
+  final List<String> memberIds;
 
   ChatItem({
     required this.id,
@@ -19,7 +21,14 @@ class ChatItem {
     this.isGroup = false,
     this.isOnline = true,
     this.isPrivate = false,
+    this.ownerId = '',
+    this.memberIds = const [],
   });
+
+  bool isOwner(String userId) {
+    if (userId.isEmpty) return false;
+    return ownerId == userId;
+  }
 
   ChatItem copyWith({
     String? id,
@@ -31,6 +40,8 @@ class ChatItem {
     bool? isGroup,
     bool? isOnline,
     bool? isPrivate,
+    String? ownerId,
+    List<String>? memberIds,
   }) {
     return ChatItem(
       id: id ?? this.id,
@@ -42,6 +53,8 @@ class ChatItem {
       isGroup: isGroup ?? this.isGroup,
       isOnline: isOnline ?? this.isOnline,
       isPrivate: isPrivate ?? this.isPrivate,
+      ownerId: ownerId ?? this.ownerId,
+      memberIds: memberIds ?? this.memberIds,
     );
   }
 }

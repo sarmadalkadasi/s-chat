@@ -202,6 +202,36 @@ class MessageRepository {
     return [];
   }
 
+  Future<File> get _groupsCacheFile async {
+    final dir = await getApplicationDocumentsDirectory();
+    final cacheDir = Directory('${dir.path}/s_chat_data');
+    if (!await cacheDir.exists()) {
+      await cacheDir.create(recursive: true);
+    }
+    return File('${cacheDir.path}/groups_cache.json');
+  }
+
+  Future<void> _saveGroupsToDiskCache(List<Map<String, dynamic>> groups) async {
+    try {
+      final file = await _groupsCacheFile;
+      await file.writeAsString(json.encode(groups));
+    } catch (_) {}
+  }
+
+  Future<List<Map<String, dynamic>>> _loadGroupsFromDiskCache() async {
+    try {
+      final file = await _groupsCacheFile;
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        if (content.isNotEmpty) {
+          final List<dynamic> list = json.decode(content);
+          return list.cast<Map<String, dynamic>>();
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
   /// Fetches available chats (users & groups) from Supabase and pairs with latest messages
   Future<List<ChatItem>> fetchAvailableChats() async {
     final List<ChatItem> chats = [];
@@ -274,6 +304,59 @@ class MessageRepository {
       );
     }
 
+    // Fetch groups from Supabase 'groups' table online or local disk cache offline
+    List<Map<String, dynamic>> groupsData = [];
+    try {
+      final groupsResponse = await Supabase.instance.client
+          .from('groups')
+          .select('id, name, image_url, is_private, created_at');
+
+      final List<dynamic> rawGroups = groupsResponse as List<dynamic>;
+      groupsData = rawGroups.map((e) => Map<String, dynamic>.from(e)).toList();
+      await _saveGroupsToDiskCache(groupsData);
+    } catch (e) {
+      debugPrint('Offline or error fetching groups from Supabase: $e');
+      groupsData = await _loadGroupsFromDiskCache();
+    }
+
+    for (final groupMap in groupsData) {
+      final id = groupMap['id']?.toString() ?? '';
+      final name = groupMap['name']?.toString() ?? 'Group';
+      final imageUrl = groupMap['image_url']?.toString() ?? '';
+      final isPrivate = groupMap['is_private'] == true;
+      final ownerId = groupMap['created_by']?.toString() ?? '';
+
+      ChatMessage? lastMsg;
+      for (int i = _messages.length - 1; i >= 0; i--) {
+        final m = _messages[i];
+        if (m.matchesChat(
+          activeChatId: id,
+          isGroup: true,
+          currentUserId: currentUserId,
+        )) {
+          lastMsg = m;
+          break;
+        }
+      }
+
+      final groupItem = ChatItem(
+        id: id,
+        name: name,
+        avatarUrl: imageUrl,
+        lastMessage: lastMsg?.displayText ?? 'Group created',
+        lastMessageTime: lastMsg?.createdAt,
+        unreadCount: 0,
+        isGroup: true,
+        isPrivate: isPrivate,
+        isOnline: _isOnline,
+        ownerId: ownerId,
+      );
+
+      if (!chats.any((c) => c.id == id)) {
+        chats.insert(0, groupItem);
+      }
+    }
+
     for (final group in _customGroups) {
       if (!chats.any((c) => c.id == group.id)) {
         ChatMessage? lastMsg;
@@ -308,21 +391,188 @@ class MessageRepository {
     return chats;
   }
 
-  /// Creates a new custom group chat
-  Future<ChatItem> createGroup({required String groupName}) async {
+  /// Uploads group image to Supabase Storage 'user_images' bucket
+  Future<String> uploadGroupImage(File imageFile, String groupId) async {
+    try {
+      final imagePath = 'group_$groupId.jpg';
+      await Supabase.instance.client.storage.from('user_images').upload(
+            imagePath,
+            imageFile,
+            fileOptions: const FileOptions(upsert: true),
+          );
+      final rawUrl = Supabase.instance.client.storage
+          .from('user_images')
+          .getPublicUrl(imagePath);
+      return '$rawUrl?t=${DateTime.now().millisecondsSinceEpoch}';
+    } catch (e) {
+      debugPrint('Error uploading group image: $e');
+      return '';
+    }
+  }
+
+  /// Creates a new custom group chat and persists to Supabase 'groups' and 'group_members' tables
+  Future<ChatItem> createGroup({
+    required String groupName,
+    String? imageUrl,
+  }) async {
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? 'anon';
+    final groupId = 'group_${DateTime.now().millisecondsSinceEpoch}';
+    final name = groupName.trim().isEmpty ? 'New Group' : groupName.trim();
+    final imgUrl = imageUrl ?? '';
+
     final newGroup = ChatItem(
-      id: 'group_${DateTime.now().millisecondsSinceEpoch}',
-      name: groupName.trim().isEmpty ? 'New Group' : groupName.trim(),
-      avatarUrl: '',
+      id: groupId,
+      name: name,
+      avatarUrl: imgUrl,
       lastMessage: 'Group created',
       lastMessageTime: DateTime.now(),
       unreadCount: 0,
       isGroup: true,
       isOnline: true,
+      ownerId: currentUserId,
+      memberIds: [currentUserId],
     );
 
     _customGroups.insert(0, newGroup);
+
+    final cached = await _loadGroupsFromDiskCache();
+    cached.insert(0, {
+      'id': groupId,
+      'name': name,
+      'image_url': imgUrl,
+      'created_by': currentUserId,
+      'is_private': false,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _saveGroupsToDiskCache(cached);
+
+    try {
+      await Supabase.instance.client.from('groups').insert({
+        'id': groupId,
+        'name': name,
+        'image_url': imgUrl,
+        'created_by': currentUserId,
+        'is_private': false,
+      });
+
+      await Supabase.instance.client.from('group_members').insert({
+        'group_id': groupId,
+        'user_id': currentUserId,
+        'role': 'owner',
+      });
+    } catch (e) {
+      debugPrint('Error inserting group to Supabase: $e');
+    }
+
     return newGroup;
+  }
+
+  /// Adds user IDs to a group
+  Future<void> addUsersToGroup({
+    required String groupId,
+    required List<String> userIds,
+  }) async {
+    final index = _customGroups.indexWhere((g) => g.id == groupId);
+    if (index != -1) {
+      final old = _customGroups[index];
+      final updatedMembers = {...old.memberIds, ...userIds}.toList();
+      _customGroups[index] = old.copyWith(memberIds: updatedMembers);
+    }
+
+    try {
+      final records = userIds
+          .map((uid) => {
+                'group_id': groupId,
+                'user_id': uid,
+                'role': 'member',
+              })
+          .toList();
+
+      await Supabase.instance.client.from('group_members').insert(records);
+    } catch (e) {
+      debugPrint('Error adding users to group: $e');
+    }
+  }
+
+  /// Updates group name and/or image_url
+  Future<ChatItem?> updateGroupSettings({
+    required String groupId,
+    String? newName,
+    String? newImageUrl,
+  }) async {
+    final Map<String, dynamic> updates = {};
+    if (newName != null && newName.trim().isNotEmpty) {
+      updates['name'] = newName.trim();
+    }
+    if (newImageUrl != null && newImageUrl.trim().isNotEmpty) {
+      updates['image_url'] = newImageUrl.trim();
+    }
+
+    if (updates.isEmpty) return null;
+
+    final index = _customGroups.indexWhere((g) => g.id == groupId);
+    ChatItem? updatedGroup;
+    if (index != -1) {
+      _customGroups[index] = _customGroups[index].copyWith(
+        name: updates['name'] as String?,
+        avatarUrl: updates['image_url'] as String?,
+      );
+      updatedGroup = _customGroups[index];
+    }
+
+    try {
+      await Supabase.instance.client
+          .from('groups')
+          .update(updates)
+          .eq('id', groupId);
+    } catch (e) {
+      debugPrint('Error updating group settings in Supabase: $e');
+    }
+
+    return updatedGroup;
+  }
+
+  /// Checks whether a group name is already taken in local cache or Supabase
+  Future<bool> isGroupNameTaken(String name, {String? excludeGroupId}) async {
+    final trimmed = name.trim().toLowerCase();
+    if (trimmed.isEmpty) return false;
+
+    for (final g in _customGroups) {
+      if (g.id != excludeGroupId && g.name.trim().toLowerCase() == trimmed) {
+        return true;
+      }
+    }
+
+    try {
+      final List<dynamic> results = await Supabase.instance.client
+          .from('groups')
+          .select('id, name')
+          .ilike('name', name.trim());
+
+      for (final item in results) {
+        final id = item['id']?.toString() ?? '';
+        if (id != excludeGroupId) {
+          return true;
+        }
+      }
+    } catch (_) {}
+
+    return false;
+  }
+
+  /// Permanently deletes a group from Supabase 'groups' table and local cache
+  Future<void> deleteGroup({required String groupId}) async {
+    _customGroups.removeWhere((g) => g.id == groupId);
+
+    final cached = await _loadGroupsFromDiskCache();
+    cached.removeWhere((g) => g['id'] == groupId);
+    await _saveGroupsToDiskCache(cached);
+
+    try {
+      await Supabase.instance.client.from('groups').delete().eq('id', groupId);
+    } catch (e) {
+      debugPrint('Error deleting group from Supabase: $e');
+    }
   }
 
   /// Clears local messages view and cache for the conversation

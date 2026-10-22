@@ -1,14 +1,18 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/chat_item.dart';
 import 'package:s_chat/models/replying_message.dart';
+import 'package:s_chat/screens/group_settings.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
+import 'package:s_chat/utils/app_alerts.dart';
 import 'package:s_chat/widgets/chat/chat_list.dart';
 import 'package:s_chat/widgets/chat/chat_media_picker.dart';
 import 'package:s_chat/widgets/chat/chat_message.dart';
 import 'package:s_chat/widgets/chat/new_message.dart';
+import 'package:s_chat/widgets/user/user_image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -86,6 +90,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _showCreateGroupDialog() async {
     final controller = TextEditingController();
+    File? pickedImage;
+
     final group = await showDialog<ChatItem>(
       context: context,
       builder: (context) {
@@ -97,13 +103,26 @@ class _ChatScreenState extends State<ChatScreen> {
               Text('New Group'),
             ],
           ),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: 'Enter group name...',
-              labelText: 'Group Name',
-              border: OutlineInputBorder(),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                UserImagePicker(
+                  onSelectImage: (file) {
+                    pickedImage = file;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    hintText: 'Enter group name...',
+                    labelText: 'Group Name',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
             ),
           ),
           actions: [
@@ -115,8 +134,33 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: () async {
                 final name = controller.text.trim();
                 if (name.isNotEmpty) {
-                  final created = await MessageRepository.instance.createGroup(
+                  final isTaken =
+                      await MessageRepository.instance.isGroupNameTaken(name);
+                  if (isTaken) {
+                    if (context.mounted) {
+                      AppAlerts.showSnackBar(
+                        context,
+                        'A group named "$name" already exists. Please choose a different name.',
+                        isError: true,
+                      );
+                    }
+                    return;
+                  }
+
+                  final tempGroupId =
+                      'group_${DateTime.now().millisecondsSinceEpoch}';
+                  String imageUrl = '';
+                  if (pickedImage != null) {
+                    imageUrl =
+                        await MessageRepository.instance.uploadGroupImage(
+                      pickedImage!,
+                      tempGroupId,
+                    );
+                  }
+                  final created =
+                      await MessageRepository.instance.createGroup(
                     groupName: name,
+                    imageUrl: imageUrl,
                   );
                   if (context.mounted) {
                     Navigator.pop(context, created);
@@ -133,6 +177,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (group != null && mounted) {
       setState(() {
         _selectedChat = group;
+        LocalNotificationManager.setActiveChatId(group.id);
       });
     }
   }
@@ -197,16 +242,6 @@ class _ChatScreenState extends State<ChatScreen> {
         break;
       case 'report':
         _showReportDialog(activeChat);
-        break;
-      case 'toggle_privacy':
-        if (activeChat != null && activeChat.isGroup) {
-          _toggleGroupPrivacy(activeChat);
-        }
-        break;
-      case 'add_users':
-        if (activeChat != null && activeChat.isGroup) {
-          _showAddUsersDialog(activeChat);
-        }
         break;
       case 'sign_out':
         _signOut();
@@ -392,148 +427,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _toggleGroupPrivacy(ChatItem activeChat) {
-    final newPrivacy = !activeChat.isPrivate;
-    setState(() {
-      _selectedChat = activeChat.copyWith(isPrivate: newPrivacy);
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          newPrivacy
-              ? '${activeChat.name} is now a Private Group'
-              : '${activeChat.name} is now a Public Group',
-        ),
-        duration: const Duration(seconds: 2),
-      ),
-    );
-  }
-
-  Future<void> _showAddUsersDialog(ChatItem activeChat) async {
-    final searchController = TextEditingController();
-    final availableChats = await MessageRepository.instance.fetchAvailableChats();
-    final candidateUsers = availableChats.where((c) => !c.isGroup).toList();
-    final selectedUserIds = <String>{};
-
-    if (!mounted) return;
-
-    final added = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            final filter = searchController.text.trim().toLowerCase();
-            final filteredCandidates = filter.isEmpty
-                ? candidateUsers
-                : candidateUsers
-                    .where((u) => u.name.toLowerCase().contains(filter))
-                    .toList();
-
-            return AlertDialog(
-              title: Row(
-                children: [
-                  const Icon(Icons.person_add_rounded, color: Colors.teal),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Add Users to ${activeChat.name}',
-                      style: const TextStyle(fontSize: 18),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-              content: SizedBox(
-                width: double.maxFinite,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextField(
-                      controller: searchController,
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.search),
-                        hintText: 'Search users...',
-                        isDense: true,
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (_) => setDialogState(() {}),
-                    ),
-                    const SizedBox(height: 12),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 240),
-                      child: filteredCandidates.isEmpty
-                          ? const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(16.0),
-                                child: Text('No users found'),
-                              ),
-                            )
-                          : ListView.builder(
-                              shrinkWrap: true,
-                              itemCount: filteredCandidates.length,
-                              itemBuilder: (context, index) {
-                                final user = filteredCandidates[index];
-                                final isSelected =
-                                    selectedUserIds.contains(user.id);
-                                return CheckboxListTile(
-                                  dense: true,
-                                  title: Text(user.name),
-                                  subtitle: Text(
-                                    user.isOnline ? 'Online' : 'Offline',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: user.isOnline
-                                          ? Colors.teal
-                                          : Colors.grey,
-                                    ),
-                                  ),
-                                  value: isSelected,
-                                  onChanged: (checked) {
-                                    setDialogState(() {
-                                      if (checked == true) {
-                                        selectedUserIds.add(user.id);
-                                      } else {
-                                        selectedUserIds.remove(user.id);
-                                      }
-                                    });
-                                  },
-                                );
-                              },
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('Cancel'),
-                ),
-                ElevatedButton(
-                  onPressed: selectedUserIds.isEmpty
-                      ? null
-                      : () => Navigator.pop(context, true),
-                  child: Text('Add (${selectedUserIds.length})'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    if (added == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Added ${selectedUserIds.length} user${selectedUserIds.length > 1 ? 's' : ''} to ${activeChat.name}',
-          ),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final activeChat = _selectedChat;
@@ -562,76 +455,108 @@ class _ChatScreenState extends State<ChatScreen> {
                 )
               : null,
           title: activeChat != null
-              ? Row(
-                  children: [
-                    if (activeChat.isGroup)
-                      CircleAvatar(
-                        radius: 18,
-                        backgroundColor:
-                            Theme.of(context).colorScheme.primaryContainer,
-                        child: const Icon(Icons.groups_rounded, size: 20),
-                      )
-                    else if (activeChat.avatarUrl.isNotEmpty)
-                      CircleAvatar(
-                        radius: 18,
-                        backgroundImage: NetworkImage(activeChat.avatarUrl),
-                      )
-                    else
-                      CircleAvatar(
-                        radius: 18,
-                        backgroundColor:
-                            Theme.of(context).colorScheme.primaryContainer,
-                        child: Text(
-                          activeChat.name.isNotEmpty
-                              ? activeChat.name[0].toUpperCase()
-                              : '?',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onPrimaryContainer,
+              ? InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () async {
+                    if (activeChat.isGroup) {
+                      final result = await Navigator.push<dynamic>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (ctx) =>
+                              GroupSettingsScreen(group: activeChat),
+                        ),
+                      );
+                      if (context.mounted) {
+                        if (result == 'deleted') {
+                          setState(() {
+                            _selectedChat = null;
+                            LocalNotificationManager.setActiveChatId(null);
+                          });
+                          AppAlerts.showSnackBar(context, 'Group deleted');
+                        } else if (result is ChatItem) {
+                          setState(() {
+                            _selectedChat = result;
+                          });
+                        }
+                      }
+                    }
+                  },
+                  child: Row(
+                    children: [
+                      if (activeChat.isGroup)
+                        CircleAvatar(
+                          radius: 18,
+                          backgroundColor:
+                              Theme.of(context).colorScheme.primaryContainer,
+                          backgroundImage: activeChat.avatarUrl.isNotEmpty
+                              ? NetworkImage(activeChat.avatarUrl)
+                              : null,
+                          child: activeChat.avatarUrl.isEmpty
+                              ? const Icon(Icons.groups_rounded, size: 20)
+                              : null,
+                        )
+                      else if (activeChat.avatarUrl.isNotEmpty)
+                        CircleAvatar(
+                          radius: 18,
+                          backgroundImage: NetworkImage(activeChat.avatarUrl),
+                        )
+                      else
+                        CircleAvatar(
+                          radius: 18,
+                          backgroundColor:
+                              Theme.of(context).colorScheme.primaryContainer,
+                          child: Text(
+                            activeChat.name.isNotEmpty
+                                ? activeChat.name[0].toUpperCase()
+                                : '?',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onPrimaryContainer,
+                            ),
                           ),
                         ),
-                      ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            activeChat.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.bold,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              activeChat.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            ),
+                            Row(
+                              children: [
+                                if (activeChat.isGroup && activeChat.isPrivate) ...[
+                                  const Icon(Icons.lock_rounded, size: 12, color: Colors.teal),
+                                  const SizedBox(width: 4),
+                                ],
+                                Text(
+                                  activeChat.isGroup
+                                      ? (activeChat.isPrivate
+                                          ? 'Private Group'
+                                          : 'Group Conversation')
+                                      : 'Direct Message',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.teal,
+                                  ),
                                 ),
-                          ),
-                          Row(
-                            children: [
-                              if (activeChat.isGroup && activeChat.isPrivate) ...[
-                                const Icon(Icons.lock_rounded, size: 12, color: Colors.teal),
-                                const SizedBox(width: 4),
                               ],
-                              Text(
-                                activeChat.isGroup
-                                    ? (activeChat.isPrivate
-                                        ? 'Private Group'
-                                        : 'Group Conversation')
-                                    : 'Direct Message',
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.teal,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -703,38 +628,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 }
 
                 return [
-                  if (activeChat.isGroup) ...[
-                    const PopupMenuItem(
-                      value: 'add_users',
-                      child: Row(
-                        children: [
-                          Icon(Icons.person_add_rounded, size: 20),
-                          SizedBox(width: 12),
-                          Text('Add Users'),
-                        ],
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'toggle_privacy',
-                      child: Row(
-                        children: [
-                          Icon(
-                            activeChat.isPrivate
-                                ? Icons.lock_open_rounded
-                                : Icons.lock_outline_rounded,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            activeChat.isPrivate
-                                ? 'Make Group Public'
-                                : 'Make Group Private',
-                          ),
-                        ],
-                      ),
-                    ),
-                    const PopupMenuDivider(),
-                  ],
                   const PopupMenuItem(
                     value: 'clear_chat',
                     child: Row(
