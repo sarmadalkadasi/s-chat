@@ -20,6 +20,7 @@ class GroupSettingsScreen extends StatefulWidget {
 }
 
 class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
+  late ChatItem _currentGroup;
   late TextEditingController _nameController;
   late bool _isPrivate;
   File? _pickedGroupImage;
@@ -28,8 +29,9 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _nameController = TextEditingController(text: widget.group.name);
-    _isPrivate = widget.group.isPrivate;
+    _currentGroup = widget.group;
+    _nameController = TextEditingController(text: _currentGroup.name);
+    _isPrivate = _currentGroup.isPrivate;
   }
 
   @override
@@ -47,7 +49,7 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
     // Validate unique group name before saving
     final isTaken = await MessageRepository.instance.isGroupNameTaken(
       newName,
-      excludeGroupId: widget.group.id,
+      excludeGroupId: _currentGroup.id,
     );
     if (isTaken) {
       setState(() => _isSaving = false);
@@ -61,22 +63,23 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
       return;
     }
 
-    String imageUrl = widget.group.avatarUrl;
+    String imageUrl = _currentGroup.avatarUrl;
     if (_pickedGroupImage != null) {
       imageUrl = await MessageRepository.instance.uploadGroupImage(
         _pickedGroupImage!,
-        widget.group.id,
+        _currentGroup.id,
       );
     }
 
     final updated = await MessageRepository.instance.updateGroupSettings(
-      groupId: widget.group.id,
+      groupId: _currentGroup.id,
       newName: newName,
       newImageUrl: imageUrl,
+      isPrivate: _isPrivate,
     );
 
     if (mounted) {
-      final finalGroup = (updated ?? widget.group).copyWith(
+      final finalGroup = (updated ?? _currentGroup).copyWith(
         name: newName,
         avatarUrl: imageUrl,
         isPrivate: _isPrivate,
@@ -90,13 +93,13 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
       context,
       title: 'Delete Group?',
       content:
-          'Are you sure you want to permanently delete "${widget.group.name}"? This action cannot be undone.',
+          'Are you sure you want to permanently delete "${_currentGroup.name}"? This action cannot be undone.',
       confirmText: 'Delete',
       isDestructive: true,
     );
 
     if (confirmed && mounted) {
-      await MessageRepository.instance.deleteGroup(groupId: widget.group.id);
+      await MessageRepository.instance.deleteGroup(groupId: _currentGroup.id);
       if (mounted) {
         Navigator.pop(context, 'deleted');
       }
@@ -130,7 +133,7 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Add Members to ${widget.group.name}',
+                      'Add Members to ${_currentGroup.name}',
                       style: const TextStyle(fontSize: 18),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -209,9 +212,15 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
 
     if (added == true && selectedUserIds.isNotEmpty && mounted) {
       await MessageRepository.instance.addUsersToGroup(
-        groupId: widget.group.id,
+        groupId: _currentGroup.id,
         userIds: selectedUserIds.toList(),
       );
+
+      final updatedMembers = {..._currentGroup.memberIds, ...selectedUserIds}.toList();
+      setState(() {
+        _currentGroup = _currentGroup.copyWith(memberIds: updatedMembers);
+      });
+
       if (mounted) {
         AppAlerts.showSnackBar(
           context,
@@ -226,8 +235,8 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? '';
-    final bool isOwner = widget.group.ownerId.isEmpty ||
-        widget.group.isOwner(currentUserId);
+    final bool isOwner = _currentGroup.ownerId.isEmpty ||
+        _currentGroup.isOwner(currentUserId);
 
     return Scaffold(
       appBar: AppBar(
@@ -249,39 +258,41 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Avatar picker
-            if (isOwner)
-              UserImagePicker(
-                onSelectImage: (image) {
-                  _pickedGroupImage = image;
-                },
-              )
-            else
-              CircleAvatar(
-                radius: 52,
-                backgroundColor: colorScheme.primaryContainer,
-                child: widget.group.avatarUrl.isNotEmpty
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(52),
-                        child: CachedMediaImage(
-                          imageUrl: widget.group.avatarUrl,
-                          width: 104,
-                          height: 104,
-                          fit: BoxFit.cover,
-                        ),
-                      )
-                    : Text(
-                        widget.group.name.isNotEmpty
-                            ? widget.group.name[0].toUpperCase()
-                            : '?',
-                        style: TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: colorScheme.onPrimaryContainer,
-                        ),
-                      ),
-              ),
+            Center(
+              child: isOwner
+                  ? UserImagePicker(
+                      onSelectImage: (image) {
+                        _pickedGroupImage = image;
+                      },
+                    )
+                  : CircleAvatar(
+                      radius: 52,
+                      backgroundColor: colorScheme.primaryContainer,
+                      child: _currentGroup.avatarUrl.isNotEmpty
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(52),
+                              child: CachedMediaImage(
+                                imageUrl: _currentGroup.avatarUrl,
+                                width: 104,
+                                height: 104,
+                                fit: BoxFit.cover,
+                              ),
+                            )
+                          : Text(
+                              _currentGroup.name.isNotEmpty
+                                  ? _currentGroup.name[0].toUpperCase()
+                                  : '?',
+                              style: TextStyle(
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                                color: colorScheme.onPrimaryContainer,
+                              ),
+                            ),
+                    ),
+            ),
 
             const SizedBox(height: 24),
 
@@ -317,15 +328,72 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
 
             const Divider(height: 32),
 
-            // Add Members action
-            if (isOwner)
-              ListTile(
-                leading: const Icon(Icons.person_add_rounded, color: Colors.teal),
-                title: const Text('Add Members'),
-                onTap: _showAddUsersDialog,
+            // Group Members header
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Group Members (${_currentGroup.memberIds.length})',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (isOwner)
+                  TextButton.icon(
+                    onPressed: _showAddUsersDialog,
+                    icon: const Icon(Icons.person_add_rounded, size: 18),
+                    label: const Text('Add'),
+                  ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
+            if (_currentGroup.memberIds.isNotEmpty)
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _currentGroup.memberIds.length,
+                itemBuilder: (context, index) {
+                  final memberId = _currentGroup.memberIds[index];
+                  final isMemberOwner = memberId == _currentGroup.ownerId;
+                  return ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: CircleAvatar(
+                      radius: 16,
+                      backgroundColor: colorScheme.primaryContainer,
+                      child: Icon(
+                        isMemberOwner ? Icons.star_rounded : Icons.person_rounded,
+                        size: 18,
+                        color: colorScheme.onPrimaryContainer,
+                      ),
+                    ),
+                    title: Text(memberId == currentUserId ? 'You' : memberId),
+                    trailing: isMemberOwner
+                        ? Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.primaryContainer,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              'Owner',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: colorScheme.onPrimaryContainer,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          )
+                        : null,
+                  );
+                },
               ),
 
-            const SizedBox(height: 24),
+            const SizedBox(height: 32),
 
             if (isOwner) ...[
               SizedBox(

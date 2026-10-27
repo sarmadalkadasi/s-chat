@@ -22,6 +22,10 @@ class ChatMessage {
   final String? chatId;
   final String? recipientId;
 
+  /// Base64 nonce of the encrypted body. When it is set, [text] holds the
+  /// ciphertext and has to be decrypted before it is displayed.
+  final String? iv;
+
   ChatMessage({
     required this.id,
     required this.userId,
@@ -34,6 +38,7 @@ class ChatMessage {
     this.replyToText,
     this.chatId,
     this.recipientId,
+    this.iv,
   });
 
   /// Serializes attachment metadata into the existing message text field.
@@ -110,8 +115,7 @@ class ChatMessage {
 
   String? get mediaUrl => mediaPayload?['url'] as String?;
 
-  String get mediaStatus =>
-      (mediaPayload?['status'] as String?) ?? 'sent';
+  String get mediaStatus => (mediaPayload?['status'] as String?) ?? 'sent';
 
   /// Returns the human-readable text without metadata prefix.
   String get cleanText {
@@ -182,19 +186,20 @@ class ChatMessage {
     return u1.compareTo(u2) <= 0 ? 'dm_${u1}_$u2' : 'dm_${u2}_$u1';
   }
 
-  ChatMessage copyWithText(String newText) {
+  ChatMessage copyWith({String? text, String? replyToText, String? iv}) {
     return ChatMessage(
       id: id,
       userId: userId,
-      text: newText,
+      text: text ?? this.text,
       username: username,
       userImage: userImage,
       createdAt: createdAt,
       replyToId: replyToId,
       replyToUsername: replyToUsername,
-      replyToText: replyToText,
+      replyToText: replyToText ?? this.replyToText,
       chatId: chatId,
       recipientId: recipientId,
+      iv: iv ?? this.iv,
     );
   }
 
@@ -227,6 +232,7 @@ class ChatMessage {
       replyToText: map['reply_to_text'],
       chatId: resolvedChatId,
       recipientId: resolvedRecipientId,
+      iv: map['iv']?.toString(),
     );
   }
 }

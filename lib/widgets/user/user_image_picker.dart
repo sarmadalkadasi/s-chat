@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:s_chat/services/media_compression_service.dart';
@@ -12,8 +14,10 @@ class UserImagePicker extends StatefulWidget {
   State<UserImagePicker> createState() => _UserImagePickerState();
 }
 
+
 class _UserImagePickerState extends State<UserImagePicker> {
   File? _pickedImage;
+  Uint8List? _pickedImageBytes; // web preview
 
   void _pickImage(ImageSource source) async {
     final image = await ImagePicker().pickImage(
@@ -24,12 +28,22 @@ class _UserImagePickerState extends State<UserImagePicker> {
     );
     if (image == null) return;
 
+    if (kIsWeb) {
+      // On web, dart:io File is unavailable — read bytes directly.
+      final bytes = await image.readAsBytes();
+      setState(() => _pickedImageBytes = bytes);
+      // Compression is a no-op on web; pass a dummy File path.
+      // The caller must handle kIsWeb by reading bytes separately if needed.
+      return;
+    }
+
     final rawFile = File(image.path);
     final compressedFile = await MediaCompressionService.instance
         .compressImageFile(inputFile: rawFile);
 
     setState(() {
       _pickedImage = compressedFile;
+      _pickedImageBytes = null;
     });
     widget.onSelectImage(compressedFile);
   }
@@ -46,11 +60,14 @@ class _UserImagePickerState extends State<UserImagePicker> {
                 radius: 52,
                 backgroundColor:
                     Theme.of(context).colorScheme.secondary.withAlpha(100),
-                foregroundImage:
-                    _pickedImage != null ? FileImage(_pickedImage!) : null,
+                foregroundImage: _pickedImageBytes != null
+                    ? MemoryImage(_pickedImageBytes!) as ImageProvider
+                    : _pickedImage != null
+                    ? FileImage(_pickedImage!)
+                    : null,
                 child: const Icon(Icons.camera_alt),
               ),
-              if (_pickedImage != null)
+              if (_pickedImage != null || _pickedImageBytes != null)
                 Positioned(
                   bottom: 0,
                   right: 0,

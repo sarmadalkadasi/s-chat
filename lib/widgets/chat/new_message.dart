@@ -146,9 +146,7 @@ class _NewMessageState extends State<NewMessage> {
   void _sendMessage() async {
     final enteredMessage = _messageController.cleanText;
 
-    if (enteredMessage.isEmpty) {
-      return;
-    }
+    if (enteredMessage.isEmpty) return;
 
     final editing = widget.editingNotifier?.value;
     final replying = widget.replyingNotifier?.value;
@@ -160,35 +158,35 @@ class _NewMessageState extends State<NewMessage> {
     });
 
     // --- SUPER CLEANING COMMAND CHECK ---
-    final cleanCheck = enteredMessage.trim().toLowerCase();
-    if (cleanCheck == r'$super_clean#' ||
-        cleanCheck == r'$super_cleaning#' ||
-        cleanCheck.contains(r'$super_clean#') ||
-        cleanCheck.contains(r'$super_cleaning#')) {
-      widget.editingNotifier?.value = null;
-      widget.replyingNotifier?.value = null;
-      try {
-        await Supabase.instance.client
-            .from('chat_messages')
-            .delete()
-            .not('created_at', 'is', null);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Super Cleaning executed: All messages deleted.'),
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Super Cleaning failed: $e')));
-        }
-      }
-      return;
-    }
+    // final cleanCheck = enteredMessage.trim().toLowerCase();
+    // if (cleanCheck == r'$super_clean#' ||
+    //     cleanCheck == r'$super_cleaning#' ||
+    //     cleanCheck.contains(r'$super_clean#') ||
+    //     cleanCheck.contains(r'$super_cleaning#')) {
+    //   widget.editingNotifier?.value = null;
+    //   widget.replyingNotifier?.value = null;
+    //   try {
+    //     await Supabase.instance.client
+    //         .from('chat_messages')
+    //         .delete()
+    //         .not('created_at', 'is', null);
+    //     if (mounted) {
+    //       ScaffoldMessenger.of(context).showSnackBar(
+    //         const SnackBar(
+    //           content: Text('Super Cleaning executed: All messages deleted.'),
+    //           duration: Duration(seconds: 3),
+    //         ),
+    //       );
+    //     }
+    //   } catch (e) {
+    //     if (mounted) {
+    //       ScaffoldMessenger.of(
+    //         context,
+    //       ).showSnackBar(SnackBar(content: Text('Super Cleaning failed: $e')));
+    //     }
+    //   }
+    //   return;
+    // }
 
     // --- OPTIMISTIC EDITING EXISTING MESSAGE (0ms UI Update) ---
     if (editing != null) {
@@ -398,6 +396,7 @@ class _NewMessageState extends State<NewMessage> {
                 height: 50,
                 width: 52,
                 child: FloatingActionButton(
+                  heroTag: 'fab_send_message',
                   onPressed: _isWriting
                       ? _sendMessage
                       : (isEditing ? null : _recordVoiceMessage),

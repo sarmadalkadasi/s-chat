@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:s_chat/services/media_cache_service.dart';
 
@@ -100,7 +101,7 @@ class _CachedMediaImageState extends State<CachedMediaImage> {
       );
     }
 
-    if (_cachedFile != null) {
+    if (_cachedFile != null && !kIsWeb) {
       return Image.file(
         _cachedFile!,
         width: widget.width,

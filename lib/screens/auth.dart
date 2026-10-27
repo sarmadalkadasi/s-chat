@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:s_chat/services/crypto_service.dart';
 import 'package:s_chat/widgets/user/user_image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -38,10 +39,12 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
     try {
-      await _supabase.auth.signInWithPassword(
+      final response = await _supabase.auth.signInWithPassword(
         email: _enteredEmail,
         password: _enteredPass,
       );
+      final user = response.user;
+      await CryptoService.instance.initUserKeys(user!.id);
     } on AuthException catch (error) {
       _messageBar(error.message);
       setState(() {
@@ -75,19 +78,23 @@ class _AuthScreenState extends State<AuthScreen> {
 
       final user = userCredentials.user;
       if (user == null) throw const AuthException('User registration failed.');
+
       debugPrint('[Signup] ✅ User created: ${user.id}');
 
       String imageUrl = '';
       if (_selectedImage != null) {
         final imagePath = '${user.id}.jpg';
         debugPrint('[Signup] 2/4 Uploading → user_images/$imagePath');
-        await _supabase.storage.from('user_images').upload(
-          imagePath,
-          _selectedImage!,
-          fileOptions: const FileOptions(upsert: true),
-        );
-        final rawUrl =
-            _supabase.storage.from('user_images').getPublicUrl(imagePath);
+        await _supabase.storage
+            .from('user_images')
+            .upload(
+              imagePath,
+              _selectedImage!,
+              fileOptions: const FileOptions(upsert: true),
+            );
+        final rawUrl = _supabase.storage
+            .from('user_images')
+            .getPublicUrl(imagePath);
         imageUrl = '$rawUrl?t=${DateTime.now().millisecondsSinceEpoch}';
         debugPrint('[Signup] ✅ Image uploaded: $imageUrl');
 
@@ -107,6 +114,9 @@ class _AuthScreenState extends State<AuthScreen> {
         'email': _enteredEmail,
         'image_url': imageUrl,
       });
+      // The key pair is published after the user row exists, so the public key
+      // is stored together with the rest of the profile.
+      await CryptoService.instance.initUserKeys(user.id);
       debugPrint('[Signup] ✅ Signup fully complete');
     } on AuthException catch (error) {
       showError(error.message);

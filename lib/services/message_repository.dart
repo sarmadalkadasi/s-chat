@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:s_chat/models/chat_item.dart';
 import 'package:s_chat/models/chat_message.dart';
+import 'package:s_chat/services/crypto_service.dart';
 import 'package:s_chat/services/profile_cache_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -25,16 +26,21 @@ class MessageRepository {
 
   static const int pageSize = 30;
 
+  /// Shown instead of a body that could not be decrypted.
+  static const String decryptionFailedText = '🔒 فشل فك تشفير هذه الرسالة';
+
   /// Create this as a PRIVATE bucket in Supabase Storage.
   static const String mediaStorageBucket = 'chat-media';
 
+  final CryptoService _crypto = CryptoService.instance;
+
   final StreamController<List<ChatMessage>> _messagesController =
-  StreamController<List<ChatMessage>>.broadcast();
+      StreamController<List<ChatMessage>>.broadcast();
 
   final StreamController<bool> _isOnlineController =
-  StreamController<bool>.broadcast();
+      StreamController<bool>.broadcast();
   final StreamController<Map<String, MediaSyncStatus>> _mediaSyncController =
-  StreamController<Map<String, MediaSyncStatus>>.broadcast();
+      StreamController<Map<String, MediaSyncStatus>>.broadcast();
   final Map<String, MediaSyncStatus> _mediaSyncStatuses = {};
 
   List<ChatMessage> _messages = [];
@@ -71,12 +77,14 @@ class MessageRepository {
       _mediaSyncController.add(Map.unmodifiable(_mediaSyncStatuses));
     }
   }
+
   bool get isLoadingOlder => _isLoadingOlder;
   bool get hasMoreOlderMessages => _hasMoreOlderMessages;
   bool get isOnline => _isOnline;
   DateTime? get lastReadTimestamp => _lastReadTimestamp;
 
-  Future<File> get _cacheFile async {
+  Future<File?> get _cacheFile async {
+    if (kIsWeb) return null;
     final dir = await getApplicationDocumentsDirectory();
     final cacheDir = Directory('${dir.path}/s_chat_data');
     if (!await cacheDir.exists()) {
@@ -85,7 +93,8 @@ class MessageRepository {
     return File('${cacheDir.path}/messages_cache.json');
   }
 
-  Future<File> get _outboxFile async {
+  Future<File?> get _outboxFile async {
+    if (kIsWeb) return null;
     final dir = await getApplicationDocumentsDirectory();
     final cacheDir = Directory('${dir.path}/s_chat_data');
     if (!await cacheDir.exists()) {
@@ -99,21 +108,25 @@ class MessageRepository {
     required String username,
     required String userImage,
   }) async {
+    if (kIsWeb) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/s_chat_data/user_session.json');
       if (!await file.parent.exists()) {
         await file.parent.create(recursive: true);
       }
-      await file.writeAsString(json.encode({
-        'user_id': userId,
-        'username': username,
-        'user_image': userImage,
-      }));
+      await file.writeAsString(
+        json.encode({
+          'user_id': userId,
+          'username': username,
+          'user_image': userImage,
+        }),
+      );
     } catch (_) {}
   }
 
   Future<Map<String, String>?> getCachedUserSession() async {
+    if (kIsWeb) return null;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/s_chat_data/user_session.json');
@@ -132,7 +145,155 @@ class MessageRepository {
     return null;
   }
 
-  Future<File> get _lastReadFile async {
+  /// Id of the signed-in user, falling back to the cached session so the app
+  /// can still decrypt messages while it works offline.
+  Future<String?> currentUserId() async {
+    try {
+      final current = Supabase.instance.client.auth.currentUser?.id;
+      if (current != null && current.isNotEmpty) return current;
+    } catch (_) {
+      // Supabase is not available, so the cached session is used instead.
+    }
+    final cached = (await getCachedUserSession())?['user_id'];
+    if (cached != null && cached.isNotEmpty) return cached;
+    return null;
+  }
+
+  /// Builds a [ChatMessage] from a raw database row.
+  ///
+  /// Rows written by an encrypted client carry an `iv` column; their body is
+  /// decrypted here so the rest of the app only ever sees plain text.
+  Future<ChatMessage> decodeMessage(Map<String, dynamic> row) async {
+    final message = ChatMessage.fromMap(row);
+    final iv = message.iv;
+    if (iv == null || iv.isEmpty) return message;
+
+    final myUserId = await currentUserId();
+    if (myUserId == null) return message.copyWith(text: decryptionFailedText);
+
+    final String? plain;
+    if (message.isGroup && message.chatId != null) {
+      plain = await _crypto.decryptFromGroupSender(
+        groupId: message.chatId!,
+        senderUserId: message.userId,
+        myUserId: myUserId,
+        encryptedText: message.cleanText,
+        iv: iv,
+      );
+    } else {
+      final peerUserId = _peerUserIdOf(message, myUserId);
+      if (peerUserId == null) {
+        return message.copyWith(text: decryptionFailedText);
+      }
+
+      plain = await _crypto.decryptFromPeer(
+        myUserId: myUserId,
+        peerUserId: peerUserId,
+        encryptedText: message.cleanText,
+        iv: iv,
+      );
+    }
+
+    if (plain == null) return message.copyWith(text: decryptionFailedText);
+
+    final payload = _decodePayload(plain);
+    return message.copyWith(
+      text: ChatMessage.encodeChatText(
+        text: payload.text,
+        chatId: message.chatId,
+        recipientId: message.recipientId,
+      ),
+      replyToText: payload.replyToText,
+    );
+  }
+
+  /// Decrypts every row of a database result.
+  Future<List<ChatMessage>> _decodeAll(List<dynamic> rows) async {
+    final messages = <ChatMessage>[];
+    for (final row in rows) {
+      if (row is Map) {
+        messages.add(await decodeMessage(Map<String, dynamic>.from(row)));
+      }
+    }
+    return messages;
+  }
+
+  /// Encrypts a message body for a direct chat or group chat using Signal Protocol Sender Keys.
+  Future<({String text, String? iv})> _encryptForPeer({
+    required String myUserId,
+    required String? peerUserId,
+    required String text,
+    required String? replyToText,
+    required String? chatId,
+  }) async {
+    if (peerUserId != null && peerUserId.isNotEmpty) {
+      final encrypted = await _crypto.encryptForPeer(
+        myUserId: myUserId,
+        peerUserId: peerUserId,
+        plainText: jsonEncode({'t': text, 'r': replyToText}),
+      );
+      if (encrypted != null) {
+        return (
+          text: ChatMessage.encodeChatText(
+            text: encrypted.text,
+            chatId: chatId,
+            recipientId: peerUserId,
+          ),
+          iv: encrypted.iv,
+        );
+      }
+    } else if (chatId != null && chatId.startsWith('group_')) {
+      final encryptedGroup = await _crypto.encryptForGroup(
+        groupId: chatId,
+        myUserId: myUserId,
+        plainText: jsonEncode({'t': text, 'r': replyToText}),
+      );
+      if (encryptedGroup != null) {
+        return (
+          text: ChatMessage.encodeChatText(
+            text: encryptedGroup.text,
+            chatId: chatId,
+            recipientId: null,
+          ),
+          iv: encryptedGroup.iv,
+        );
+      }
+    }
+
+    return (
+      text: ChatMessage.encodeChatText(
+        text: text,
+        chatId: chatId,
+        recipientId: peerUserId,
+      ),
+      iv: null,
+    );
+  }
+
+  /// Splits the decrypted payload into the body and the quoted reply text.
+  ({String text, String? replyToText}) _decodePayload(String plain) {
+    try {
+      final decoded = jsonDecode(plain);
+      if (decoded is Map) {
+        return (
+          text: decoded['t']?.toString() ?? '',
+          replyToText: decoded['r']?.toString(),
+        );
+      }
+    } catch (_) {
+      // Not a JSON payload, so the decrypted value is the body itself.
+    }
+    return (text: plain, replyToText: null);
+  }
+
+  /// The other participant of a direct chat.
+  String? _peerUserIdOf(ChatMessage message, String myUserId) {
+    if (message.userId != myUserId) return message.userId;
+    return message.recipientId;
+  }
+
+  Future<File?> get _lastReadFile async {
+    if (kIsWeb) return null;
     final dir = await getApplicationDocumentsDirectory();
     final cacheDir = Directory('${dir.path}/s_chat_data');
     if (!await cacheDir.exists()) {
@@ -142,9 +303,10 @@ class MessageRepository {
   }
 
   Future<void> _loadLastReadTimestamp() async {
+    if (kIsWeb) return;
     try {
       final file = await _lastReadFile;
-      if (await file.exists()) {
+      if (file != null && await file.exists()) {
         final content = await file.readAsString();
         if (content.isNotEmpty) {
           final Map<String, dynamic> data = json.decode(content);
@@ -160,19 +322,25 @@ class MessageRepository {
   Future<void> updateLastReadTimestamp([DateTime? timestamp]) async {
     final newTime = timestamp ?? DateTime.now().toUtc();
     _lastReadTimestamp = newTime;
+    if (kIsWeb) return;
     try {
       final file = await _lastReadFile;
-      await file.writeAsString(json.encode({
-        'last_read_timestamp': newTime.toIso8601String(),
-      }));
+      if (file != null) {
+        await file.writeAsString(
+          json.encode({'last_read_timestamp': newTime.toIso8601String()}),
+        );
+      }
     } catch (_) {}
   }
 
   static String getDirectChatId(String user1, String user2) {
-    return user1.compareTo(user2) <= 0 ? 'dm_${user1}_$user2' : 'dm_${user2}_$user1';
+    return user1.compareTo(user2) <= 0
+        ? 'dm_${user1}_$user2'
+        : 'dm_${user2}_$user1';
   }
 
-  Future<File> get _usersCacheFile async {
+  Future<File?> get _usersCacheFile async {
+    if (kIsWeb) return null;
     final dir = await getApplicationDocumentsDirectory();
     final cacheDir = Directory('${dir.path}/s_chat_data');
     if (!await cacheDir.exists()) {
@@ -182,16 +350,20 @@ class MessageRepository {
   }
 
   Future<void> _saveUsersToDiskCache(List<Map<String, dynamic>> users) async {
+    if (kIsWeb) return;
     try {
       final file = await _usersCacheFile;
-      await file.writeAsString(json.encode(users));
+      if (file != null) {
+        await file.writeAsString(json.encode(users));
+      }
     } catch (_) {}
   }
 
   Future<List<Map<String, dynamic>>> _loadUsersFromDiskCache() async {
+    if (kIsWeb) return [];
     try {
       final file = await _usersCacheFile;
-      if (await file.exists()) {
+      if (file != null && await file.exists()) {
         final content = await file.readAsString();
         if (content.isNotEmpty) {
           final List<dynamic> list = json.decode(content);
@@ -202,7 +374,8 @@ class MessageRepository {
     return [];
   }
 
-  Future<File> get _groupsCacheFile async {
+  Future<File?> get _groupsCacheFile async {
+    if (kIsWeb) return null;
     final dir = await getApplicationDocumentsDirectory();
     final cacheDir = Directory('${dir.path}/s_chat_data');
     if (!await cacheDir.exists()) {
@@ -212,16 +385,20 @@ class MessageRepository {
   }
 
   Future<void> _saveGroupsToDiskCache(List<Map<String, dynamic>> groups) async {
+    if (kIsWeb) return;
     try {
       final file = await _groupsCacheFile;
-      await file.writeAsString(json.encode(groups));
+      if (file != null) {
+        await file.writeAsString(json.encode(groups));
+      }
     } catch (_) {}
   }
 
   Future<List<Map<String, dynamic>>> _loadGroupsFromDiskCache() async {
+    if (kIsWeb) return [];
     try {
       final file = await _groupsCacheFile;
-      if (await file.exists()) {
+      if (file != null && await file.exists()) {
         final content = await file.readAsString();
         if (content.isNotEmpty) {
           final List<dynamic> list = json.decode(content);
@@ -242,7 +419,7 @@ class MessageRepository {
     try {
       final response = await Supabase.instance.client
           .from('users')
-          .select('id, username, image_url');
+          .select('id, username, image_url, public_key');
 
       final List<dynamic> rawList = response as List<dynamic>;
       usersData = rawList.map((e) => Map<String, dynamic>.from(e)).toList();
@@ -276,6 +453,11 @@ class MessageRepository {
 
       final username = userData['username']?.toString() ?? 'Anonymous';
       final imageUrl = userData['image_url']?.toString() ?? '';
+      final publicKey = userData['public_key']?.toString() ?? '';
+
+      if (publicKey.isNotEmpty) {
+        _crypto.cachePublicKey(id, publicKey);
+      }
 
       ChatMessage? lastMsg;
       for (int i = _messages.length - 1; i >= 0; i--) {
@@ -319,12 +501,31 @@ class MessageRepository {
       groupsData = await _loadGroupsFromDiskCache();
     }
 
+    // Fetch group members from Supabase 'group_members' table
+    final Map<String, List<String>> groupMembersMap = {};
+    try {
+      final membersResponse = await Supabase.instance.client
+          .from('group_members')
+          .select('group_id, user_id');
+      final List<dynamic> rawMembers = membersResponse as List<dynamic>;
+      for (final item in rawMembers) {
+        final gId = item['group_id']?.toString() ?? '';
+        final uId = item['user_id']?.toString() ?? '';
+        if (gId.isNotEmpty && uId.isNotEmpty) {
+          groupMembersMap.putIfAbsent(gId, () => []).add(uId);
+        }
+      }
+    } catch (e) {
+      debugPrint('Offline or error fetching group members from Supabase: $e');
+    }
+
     for (final groupMap in groupsData) {
       final id = groupMap['id']?.toString() ?? '';
       final name = groupMap['name']?.toString() ?? 'Group';
       final imageUrl = groupMap['image_url']?.toString() ?? '';
       final isPrivate = groupMap['is_private'] == true;
       final ownerId = groupMap['created_by']?.toString() ?? '';
+      final memberIds = groupMembersMap[id] ?? (ownerId.isNotEmpty ? [ownerId] : []);
 
       ChatMessage? lastMsg;
       for (int i = _messages.length - 1; i >= 0; i--) {
@@ -350,6 +551,7 @@ class MessageRepository {
         isPrivate: isPrivate,
         isOnline: _isOnline,
         ownerId: ownerId,
+        memberIds: memberIds,
       );
 
       if (!chats.any((c) => c.id == id)) {
@@ -395,7 +597,9 @@ class MessageRepository {
   Future<String> uploadGroupImage(File imageFile, String groupId) async {
     try {
       final imagePath = 'group_$groupId.jpg';
-      await Supabase.instance.client.storage.from('user_images').upload(
+      await Supabase.instance.client.storage
+          .from('user_images')
+          .upload(
             imagePath,
             imageFile,
             fileOptions: const FileOptions(upsert: true),
@@ -415,7 +619,8 @@ class MessageRepository {
     required String groupName,
     String? imageUrl,
   }) async {
-    final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? 'anon';
+    final currentUserId =
+        Supabase.instance.client.auth.currentUser?.id ?? 'anon';
     final groupId = 'group_${DateTime.now().millisecondsSinceEpoch}';
     final name = groupName.trim().isEmpty ? 'New Group' : groupName.trim();
     final imgUrl = imageUrl ?? '';
@@ -447,22 +652,32 @@ class MessageRepository {
     await _saveGroupsToDiskCache(cached);
 
     try {
-      await Supabase.instance.client.from('groups').insert({
+      await Supabase.instance.client.from('groups').upsert({
         'id': groupId,
         'name': name,
         'image_url': imgUrl,
         'created_by': currentUserId,
         'is_private': false,
       });
+    } catch (e) {
+      debugPrint('Error inserting group row to Supabase: $e');
+    }
 
-      await Supabase.instance.client.from('group_members').insert({
+    try {
+      await Supabase.instance.client.from('group_members').upsert({
         'group_id': groupId,
         'user_id': currentUserId,
         'role': 'owner',
-      });
+      }, onConflict: 'group_id, user_id');
     } catch (e) {
-      debugPrint('Error inserting group to Supabase: $e');
+      debugPrint('Error inserting group_members owner row to Supabase: $e');
     }
+
+    unawaited(_crypto.distributeSenderKey(
+      groupId: groupId,
+      myUserId: currentUserId,
+      memberIds: newGroup.memberIds,
+    ));
 
     return newGroup;
   }
@@ -472,6 +687,7 @@ class MessageRepository {
     required String groupId,
     required List<String> userIds,
   }) async {
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? '';
     final index = _customGroups.indexWhere((g) => g.id == groupId);
     if (index != -1) {
       final old = _customGroups[index];
@@ -481,24 +697,31 @@ class MessageRepository {
 
     try {
       final records = userIds
-          .map((uid) => {
-                'group_id': groupId,
-                'user_id': uid,
-                'role': 'member',
-              })
+          .map((uid) => {'group_id': groupId, 'user_id': uid, 'role': 'member'})
           .toList();
 
-      await Supabase.instance.client.from('group_members').insert(records);
+      await Supabase.instance.client
+          .from('group_members')
+          .upsert(records, onConflict: 'group_id, user_id');
+
+      if (currentUserId.isNotEmpty) {
+        unawaited(_crypto.distributeSenderKey(
+          groupId: groupId,
+          myUserId: currentUserId,
+          memberIds: userIds,
+        ));
+      }
     } catch (e) {
-      debugPrint('Error adding users to group: $e');
+      debugPrint('Error adding users to group_members in Supabase: $e');
     }
   }
 
-  /// Updates group name and/or image_url
+  /// Updates group name, image_url, and/or privacy
   Future<ChatItem?> updateGroupSettings({
     required String groupId,
     String? newName,
     String? newImageUrl,
+    bool? isPrivate,
   }) async {
     final Map<String, dynamic> updates = {};
     if (newName != null && newName.trim().isNotEmpty) {
@@ -506,6 +729,9 @@ class MessageRepository {
     }
     if (newImageUrl != null && newImageUrl.trim().isNotEmpty) {
       updates['image_url'] = newImageUrl.trim();
+    }
+    if (isPrivate != null) {
+      updates['is_private'] = isPrivate;
     }
 
     if (updates.isEmpty) return null;
@@ -516,6 +742,7 @@ class MessageRepository {
       _customGroups[index] = _customGroups[index].copyWith(
         name: updates['name'] as String?,
         avatarUrl: updates['image_url'] as String?,
+        isPrivate: isPrivate ?? _customGroups[index].isPrivate,
       );
       updatedGroup = _customGroups[index];
     }
@@ -582,11 +809,13 @@ class MessageRepository {
     String? currentUserId,
   }) async {
     if (activeChatId != null && currentUserId != null) {
-      _messages.removeWhere((m) => m.matchesChat(
-            activeChatId: activeChatId,
-            isGroup: isGroup,
-            currentUserId: currentUserId,
-          ));
+      _messages.removeWhere(
+        (m) => m.matchesChat(
+          activeChatId: activeChatId,
+          isGroup: isGroup,
+          currentUserId: currentUserId,
+        ),
+      );
     } else {
       _messages.clear();
     }
@@ -621,9 +850,10 @@ class MessageRepository {
   }
 
   Future<void> _loadFromDiskCache() async {
+    if (kIsWeb) return;
     try {
       final file = await _cacheFile;
-      if (await file.exists()) {
+      if (file != null && await file.exists()) {
         final content = await file.readAsString();
         if (content.isNotEmpty) {
           final List<dynamic> jsonList = json.decode(content);
@@ -638,22 +868,27 @@ class MessageRepository {
   }
 
   Future<void> _saveToDiskCache() async {
+    if (kIsWeb) return;
     try {
       final file = await _cacheFile;
+      if (file == null) return;
       final jsonList = _messages
-          .map((m) => {
-        'id': m.id,
-        'user_id': m.userId,
-        'text': m.text,
-        'username': m.username,
-        'user_image': m.userImage,
-        'created_at': m.createdAt?.toUtc().toIso8601String(),
-        'reply_to_id': m.replyToId,
-        'reply_to_username': m.replyToUsername,
-        'reply_to_text': m.replyToText,
-        'chat_id': m.chatId,
-        'recipient_id': m.recipientId,
-      })
+          .map(
+            (m) => {
+              'id': m.id,
+              'user_id': m.userId,
+              'text': m.text,
+              'username': m.username,
+              'user_image': m.userImage,
+              'created_at': m.createdAt?.toUtc().toIso8601String(),
+              'reply_to_id': m.replyToId,
+              'reply_to_username': m.replyToUsername,
+              'reply_to_text': m.replyToText,
+              'chat_id': m.chatId,
+              'recipient_id': m.recipientId,
+              'iv': m.iv,
+            },
+          )
           .toList();
       await file.writeAsString(json.encode(jsonList));
     } catch (e) {
@@ -662,9 +897,10 @@ class MessageRepository {
   }
 
   Future<void> _loadOutboxFromDisk() async {
+    if (kIsWeb) return;
     try {
       final file = await _outboxFile;
-      if (await file.exists()) {
+      if (file != null && await file.exists()) {
         final content = await file.readAsString();
         if (content.isNotEmpty) {
           final List<dynamic> jsonList = json.decode(content);
@@ -673,13 +909,13 @@ class MessageRepository {
             if (item['action'] == 'insert_media') {
               final tempId = item['temp_id']?.toString();
               if (tempId != null && tempId.isNotEmpty) {
-                _mediaSyncStatuses[tempId] =
-                const MediaSyncStatus(MediaSyncPhase.queued);
+                _mediaSyncStatuses[tempId] = const MediaSyncStatus(
+                  MediaSyncPhase.queued,
+                );
               }
             }
           }
-          if (_mediaSyncStatuses.isNotEmpty &&
-              !_mediaSyncController.isClosed) {
+          if (_mediaSyncStatuses.isNotEmpty && !_mediaSyncController.isClosed) {
             _mediaSyncController.add(Map.unmodifiable(_mediaSyncStatuses));
           }
         }
@@ -690,9 +926,12 @@ class MessageRepository {
   }
 
   Future<void> _saveOutboxToDisk() async {
+    if (kIsWeb) return;
     try {
       final file = await _outboxFile;
-      await file.writeAsString(json.encode(_outbox));
+      if (file != null) {
+        await file.writeAsString(json.encode(_outbox));
+      }
     } catch (e) {
       debugPrint('Error saving outbox to disk: $e');
     }
@@ -718,7 +957,7 @@ class MessageRepository {
       _isOnlineController.add(true);
 
       final List<dynamic> docs = response as List<dynamic>;
-      final fetchedMessages = docs.map((e) => ChatMessage.fromMap(e)).toList();
+      final fetchedMessages = await _decodeAll(docs);
 
       if (fetchedMessages.length < pageSize) {
         _hasMoreOlderMessages = false;
@@ -753,7 +992,7 @@ class MessageRepository {
         return false;
       }
 
-      final olderMessages = docs.map((e) => ChatMessage.fromMap(e)).toList();
+      final olderMessages = await _decodeAll(docs);
       if (olderMessages.length < pageSize) {
         _hasMoreOlderMessages = false;
       }
@@ -807,7 +1046,35 @@ class MessageRepository {
     _mergeMessages([optimisticMsg]);
     await _saveToDiskCache();
 
-    // 2. Queue in offline outbox
+    // Distribute Group Sender Key if this is a group message
+    if (chatId != null && chatId.startsWith('group_')) {
+      final activeGroup = _customGroups.firstWhere(
+        (g) => g.id == chatId,
+        orElse: () => ChatItem(
+          id: chatId,
+          name: 'Group',
+          avatarUrl: '',
+          lastMessage: '',
+        ),
+      );
+      unawaited(_crypto.distributeSenderKey(
+        groupId: chatId,
+        myUserId: userId,
+        memberIds: activeGroup.memberIds.isNotEmpty
+            ? activeGroup.memberIds
+            : [userId],
+      ));
+    }
+
+    // 2. Encrypt the body for the peer and queue it in the offline outbox.
+    final wire = await _encryptForPeer(
+      myUserId: userId,
+      peerUserId: recipientId,
+      text: text,
+      replyToText: replyToText,
+      chatId: chatId,
+    );
+
     final outboxItem = {
       'action': 'insert',
       'temp_id': tempId,
@@ -815,14 +1082,16 @@ class MessageRepository {
       'recipient_id': recipientId,
       'data': {
         'user_id': userId,
-        'text': encodedText,
+        'text': wire.text,
+        if (wire.iv != null) 'iv': wire.iv,
         'username': username,
         'user_image': userImage,
         'created_at': now.toIso8601String(),
         if (replyToId != null) ...{
           'reply_to_id': replyToId,
           'reply_to_username': replyToUsername,
-          'reply_to_text': replyToText,
+          // The quoted text travels inside the encrypted payload.
+          if (wire.iv == null) 'reply_to_text': replyToText,
         },
       },
     };
@@ -864,13 +1133,19 @@ class MessageRepository {
     if (currentUser != null && (username.isEmpty || userImage.isEmpty)) {
       final metadata = currentUser.userMetadata;
       if (username.isEmpty) username = metadata?['username']?.toString() ?? '';
-      if (userImage.isEmpty) userImage = metadata?['image_url']?.toString() ?? '';
+      if (userImage.isEmpty) {
+        userImage = metadata?['image_url']?.toString() ?? '';
+      }
 
       if (username.isEmpty || userImage.isEmpty) {
         final profile = ProfileCacheService.instance.getCached(currentUser.id);
         if (profile != null) {
-          if (username.isEmpty) username = profile['username']?.toString() ?? 'User';
-          if (userImage.isEmpty) userImage = profile['image_url']?.toString() ?? '';
+          if (username.isEmpty) {
+            username = profile['username']?.toString() ?? 'User';
+          }
+          if (userImage.isEmpty) {
+            userImage = profile['image_url']?.toString() ?? '';
+          }
         }
       }
     }
@@ -967,10 +1242,10 @@ class MessageRepository {
   }
 
   Future<String> _copyMediaToPersistentStorage(
-      String sourcePath,
-      String tempId,
-      String displayName,
-      ) async {
+    String sourcePath,
+    String tempId,
+    String displayName,
+  ) async {
     final source = File(sourcePath);
     if (!await source.exists()) {
       throw FileSystemException(
@@ -982,8 +1257,8 @@ class MessageRepository {
     final appDirectory = await getApplicationDocumentsDirectory();
     final target = File(
       '${appDirectory.path}${Platform.pathSeparator}s_chat_data'
-          '${Platform.pathSeparator}pending_media${Platform.pathSeparator}$tempId'
-          '${Platform.pathSeparator}${_safeFileName(displayName)}',
+      '${Platform.pathSeparator}pending_media${Platform.pathSeparator}$tempId'
+      '${Platform.pathSeparator}${_safeFileName(displayName)}',
     );
     await target.parent.create(recursive: true);
 
@@ -1037,15 +1312,33 @@ class MessageRepository {
 
     if (index != -1) {
       final oldMsg = _messages[index];
-      final encodedText = ChatMessage.encodeChatText(
+
+      // Encrypt the new body first. A message that is already encrypted stays
+      // encrypted, so the queued update carries a fresh nonce.
+      final wire = await _encryptForPeer(
+        myUserId: oldMsg.userId,
+        peerUserId: oldMsg.recipientId,
         text: newText,
+        replyToText: oldMsg.replyToText,
         chatId: oldMsg.chatId,
-        recipientId: oldMsg.recipientId,
       );
+
+      if (oldMsg.iv != null && wire.iv == null) {
+        // The body is encrypted on the server but the peer key is not
+        // available right now, so the update is postponed instead of leaking
+        // the plain text.
+        debugPrint('MessageRepository: edit skipped, peer key unavailable');
+        return;
+      }
+
       final updatedMsg = ChatMessage(
         id: oldMsg.id,
         userId: oldMsg.userId,
-        text: encodedText,
+        text: ChatMessage.encodeChatText(
+          text: newText,
+          chatId: oldMsg.chatId,
+          recipientId: oldMsg.recipientId,
+        ),
         username: oldMsg.username,
         userImage: oldMsg.userImage,
         createdAt: oldMsg.createdAt,
@@ -1054,6 +1347,7 @@ class MessageRepository {
         replyToText: oldMsg.replyToText,
         chatId: oldMsg.chatId,
         recipientId: oldMsg.recipientId,
+        iv: wire.iv,
       );
 
       // 1. Instantly update local list (0ms delay)
@@ -1065,7 +1359,7 @@ class MessageRepository {
       _outbox.add({
         'action': 'update',
         'id': id,
-        'data': {'text': encodedText},
+        'data': {'text': wire.text, if (wire.iv != null) 'iv': wire.iv},
       });
       await _saveOutboxToDisk();
 
@@ -1107,10 +1401,7 @@ class MessageRepository {
     }
 
     if (isMe) {
-      _outbox.add({
-        'action': 'delete',
-        'id': id,
-      });
+      _outbox.add({'action': 'delete', 'id': id});
       await _saveOutboxToDisk();
       _processOfflineOutbox();
     }
@@ -1128,8 +1419,9 @@ class MessageRepository {
       try {
         if (action == 'insert') {
           final tempId = item['temp_id'];
-          final Map<String, dynamic> insertData =
-          Map<String, dynamic>.from(item['data']);
+          final Map<String, dynamic> insertData = Map<String, dynamic>.from(
+            item['data'],
+          );
 
           final response = await Supabase.instance.client
               .from('chat_messages')
@@ -1139,7 +1431,7 @@ class MessageRepository {
 
           if (response != null) {
             _messages.removeWhere((m) => m.id.toString() == tempId);
-            final confirmedMsg = ChatMessage.fromMap(response);
+            final confirmedMsg = await decodeMessage(response);
             _mergeMessages([confirmedMsg]);
             await _saveToDiskCache();
           }
@@ -1151,8 +1443,9 @@ class MessageRepository {
           final localPath = item['local_path'] as String?;
           final storagePath = item['storage_path'] as String?;
           final originalUrl = item['url'] as String?;
-          final Map<String, dynamic> insertData =
-          Map<String, dynamic>.from(item['data'] as Map);
+          final Map<String, dynamic> insertData = Map<String, dynamic>.from(
+            item['data'] as Map,
+          );
 
           if (kind != 'url') {
             if (localPath == null || storagePath == null) {
@@ -1175,13 +1468,13 @@ class MessageRepository {
               await Supabase.instance.client.storage
                   .from(mediaStorageBucket)
                   .upload(
-                storagePath,
-                localFile,
-                fileOptions: FileOptions(
-                  contentType: _mediaContentType(kind, name),
-                  upsert: true,
-                ),
-              );
+                    storagePath,
+                    localFile,
+                    fileOptions: FileOptions(
+                      contentType: _mediaContentType(kind, name),
+                      upsert: true,
+                    ),
+                  );
               item['uploaded'] = true;
               await _saveOutboxToDisk();
             }
@@ -1219,22 +1512,23 @@ class MessageRepository {
           // Replace the local temporary row with the server row, but retain the
           // sender's local media copy so it can be played/viewed offline.
           _messages.removeWhere((m) => m.id.toString() == tempId);
-          var confirmedMessage = ChatMessage.fromMap(response);
+          var confirmedMessage = await decodeMessage(response);
           if (localPath != null && confirmedMessage.mediaPayload != null) {
             final localPayload = <String, dynamic>{
               ...confirmedMessage.mediaPayload!,
               'local_path': localPath,
             };
-            confirmedMessage = confirmedMessage.copyWithText(
-              ChatMessage.encodeMediaText(localPayload),
+            confirmedMessage = confirmedMessage.copyWith(
+              text: ChatMessage.encodeMediaText(localPayload),
             );
           }
           _mergeMessages([confirmedMessage]);
           await _saveToDiskCache();
         } else if (action == 'update') {
           final id = item['id'];
-          final Map<String, dynamic> updateData =
-          Map<String, dynamic>.from(item['data']);
+          final Map<String, dynamic> updateData = Map<String, dynamic>.from(
+            item['data'],
+          );
 
           await Supabase.instance.client
               .from('chat_messages')
@@ -1277,7 +1571,7 @@ class MessageRepository {
 
   void _mergeMessages(List<ChatMessage> newMessages) {
     final Map<String, ChatMessage> map = {
-      for (var m in _messages) m.id.toString(): m
+      for (var m in _messages) m.id.toString(): m,
     };
     for (var incoming in newMessages) {
       final key = incoming.id.toString();
@@ -1294,7 +1588,9 @@ class MessageRepository {
           ...incoming.mediaPayload!,
           'local_path': existingLocalPath,
         };
-        map[key] = incoming.copyWithText(ChatMessage.encodeMediaText(payload));
+        map[key] = incoming.copyWith(
+          text: ChatMessage.encodeMediaText(payload),
+        );
       } else {
         map[key] = incoming;
       }
@@ -1310,26 +1606,26 @@ class MessageRepository {
       _realtimeChannel = Supabase.instance.client
           .channel('public:chat_messages')
           .onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'chat_messages',
-        callback: (payload) {
-          _handleRealtimePayload(payload);
-        },
-      )
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'chat_messages',
+            callback: (payload) {
+              unawaited(_handleRealtimePayload(payload));
+            },
+          )
           .subscribe();
     } catch (e) {
       debugPrint('Realtime subscription error (offline): $e');
     }
   }
 
-  void _handleRealtimePayload(PostgresChangePayload payload) {
+  Future<void> _handleRealtimePayload(PostgresChangePayload payload) async {
     if (payload.eventType == PostgresChangeEvent.insert) {
-      final newMsg = ChatMessage.fromMap(payload.newRecord);
+      final newMsg = await decodeMessage(payload.newRecord);
       _mergeMessages([newMsg]);
       _saveToDiskCache();
     } else if (payload.eventType == PostgresChangeEvent.update) {
-      final updatedMsg = ChatMessage.fromMap(payload.newRecord);
+      final updatedMsg = await decodeMessage(payload.newRecord);
       _mergeMessages([updatedMsg]);
       _saveToDiskCache();
     } else if (payload.eventType == PostgresChangeEvent.delete) {

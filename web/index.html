@@ -1,6 +1,4 @@
-<!DOCTYPE html>
-<html>
-<head>
+<!DOCTYPE html><html><head>
   <!--
     If you are serving your web app in a path other than the root, change the
     href value below to reflect the base path you are serving from.
@@ -18,7 +16,11 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter chat project.">
+  <meta name="description" content="SChat - Fast, secure real-time chat. Download the Android app for the best experience.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#075E54">
+  <meta property="og:title" content="SChat">
+  <meta property="og:description" content="SChat - Fast, secure real-time chat. Download the Android app for the best experience.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -27,12 +29,86 @@
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+  <link rel="icon" type="image/png" href="favicon.png">
 
   <title>s_chat</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- Passkeys Web SDK -->
+  <script src="https://github.com/corbado/flutter-passkeys/releases/download/2.4.0/bundle.js"></script>
+  <style id="splash-screen-style">
+    html {
+      height: 100%
+    }
+
+    body {
+      margin: 0;
+      min-height: 100%;
+      background-color: #075E54;
+          background-size: 100% 100%;
+    }
+
+    .center {
+      margin: 0;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      -ms-transform: translate(-50%, -50%);
+      transform: translate(-50%, -50%);
+    }
+
+    .contain {
+      display:block;
+      width:100%; height:100%;
+      object-fit: contain;
+    }
+
+    .stretch {
+      display:block;
+      width:100%; height:100%;
+    }
+
+    .cover {
+      display:block;
+      width:100%; height:100%;
+      object-fit: cover;
+    }
+
+    .bottom {
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      -ms-transform: translate(-50%, 0);
+      transform: translate(-50%, 0);
+    }
+
+    .bottomLeft {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+    }
+
+    .bottomRight {
+      position: absolute;
+      bottom: 0;
+      right: 0;
+    }
+  </style>
+  <script id="splash-screen-script">
+    function removeSplashFromWeb() {
+      document.getElementById("splash")?.remove();
+      document.getElementById("splash-branding")?.remove();
+      document.body.style.background = "transparent";
+    }
+  </script>
+  <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport">
 </head>
 <body>
+  <picture id="splash">
+      <source srcset="splash/img/light-1x.png 1x, splash/img/light-2x.png 2x, splash/img/light-3x.png 3x, splash/img/light-4x.png 4x" media="(prefers-color-scheme: light)">
+      <source srcset="splash/img/dark-1x.png 1x, splash/img/dark-2x.png 2x, splash/img/dark-3x.png 3x, splash/img/dark-4x.png 4x" media="(prefers-color-scheme: dark)">
+      <img class="center" aria-hidden="true" src="splash/img/light-1x.png" alt="">
+  </picture>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
@@ -41,6 +117,96 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
-  <script src="flutter_bootstrap.js" async></script>
-</body>
-</html>
+  <!-- Android download banner -->
+  <style>
+    #android-banner {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 9999;
+      background: #FFF176;
+      color: #212121;
+      font-family: system-ui, sans-serif;
+      font-size: 14px;
+      padding: 10px 16px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    #android-banner span { flex: 1; min-width: 200px; }
+    #android-banner a {
+      background: #075E54;
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 20px;
+      text-decoration: none;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    #android-banner a:hover { background: #054d45; }
+    #banner-close {
+      background: none;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      color: #555;
+      padding: 0 4px;
+      line-height: 1;
+    }
+  </style>
+
+  <div id="android-banner">
+    <span>⚠️ This web version has limited features. For the best experience, download the <strong>Android app</strong>.</span>
+    <a id="apk-link" href="#" download="">⬇ Download Android App</a>
+    <button id="banner-close" aria-label="Dismiss">✕</button>
+  </div>
+
+  <script>
+    (function () {
+      // Don't show again if already dismissed
+      if (sessionStorage.getItem('banner-dismissed')) return;
+
+      var ua = navigator.userAgent;
+      var isAndroid = /Android/i.test(ua);
+
+      var link = document.getElementById('apk-link');
+      var banner = document.getElementById('android-banner');
+
+      if (isAndroid) {
+        // Parse Android version: "Android 9" → 9
+        var match = ua.match(/Android\s([\d.]+)/);
+        var version = match ? parseFloat(match[1]) : 0;
+        if (version >= 8) {
+          link.href = 'apks/s_chat-8.apk';
+          link.textContent = '⬇ Download (Android 8+)';
+        } else {
+          link.href = 'apks/s_chat-7.apk';
+          link.textContent = '⬇ Download (Android 7)';
+        }
+      } else {
+        // Desktop / iOS — offer both options
+        link.href = 'apks/s_chat-8.apk';
+        link.textContent = '⬇ Android 8+';
+        // Insert a second link for older Android
+        var link7 = document.createElement('a');
+        link7.href = 'apks/s_chat-7.apk';
+        link7.download = '';
+        link7.textContent = '⬇ Android 7';
+        link7.style.cssText = link.style.cssText;
+        link.insertAdjacentElement('afterend', link7);
+      }
+
+      banner.style.display = 'flex';
+
+      document.getElementById('banner-close').onclick = function () {
+        banner.style.display = 'none';
+        sessionStorage.setItem('banner-dismissed', '1');
+      };
+    })();
+  </script>
+
+  <script src="flutter_bootstrap.js" async=""></script>
+
+
+</body></html>

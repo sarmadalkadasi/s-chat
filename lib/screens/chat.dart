@@ -5,12 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:s_chat/models/chat_item.dart';
 import 'package:s_chat/models/replying_message.dart';
 import 'package:s_chat/screens/group_settings.dart';
+import 'package:s_chat/services/crypto_service.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:s_chat/utils/app_alerts.dart';
 import 'package:s_chat/widgets/chat/chat_list.dart';
 import 'package:s_chat/widgets/chat/chat_media_picker.dart';
 import 'package:s_chat/widgets/chat/chat_message.dart';
+import 'package:s_chat/widgets/chat/image_viewer.dart';
 import 'package:s_chat/widgets/chat/new_message.dart';
 import 'package:s_chat/widgets/user/user_image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -30,7 +32,6 @@ class _ChatScreenState extends State<ChatScreen> {
       ValueNotifier<ReplyingMessage?>(null);
 
   ChatItem? _selectedChat;
-
   bool _canJump = false;
   static const double _jumpButtonThreshold = 200;
 
@@ -40,22 +41,19 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.addListener(_onScroll);
 
     LocalNotificationManager.setOnNotificationTap((chatId) async {
-      final availableChats =
-          await MessageRepository.instance.fetchAvailableChats();
+      final availableChats = await MessageRepository.instance
+          .fetchAvailableChats();
       final target = availableChats.firstWhere(
         (c) => c.id == chatId,
-        orElse: () => ChatItem(
-          id: chatId,
-          name: 'Chat',
-          avatarUrl: '',
-          lastMessage: '',
-        ),
+        orElse: () =>
+            ChatItem(id: chatId, name: 'Chat', avatarUrl: '', lastMessage: ''),
       );
       if (mounted) {
         setState(() {
           _selectedChat = target;
           LocalNotificationManager.setActiveChatId(target.id);
         });
+        await _loadReceiverPublicKey();
       }
     });
   }
@@ -67,6 +65,18 @@ class _ChatScreenState extends State<ChatScreen> {
     _editingNotifier.dispose();
     _replyingNotifier.dispose();
     super.dispose();
+  }
+
+  /// Warms up the public key cache of the selected chat, so the first message
+  /// can be encrypted without waiting for an extra round trip.
+  Future<void> _loadReceiverPublicKey() async {
+    final chat = _selectedChat;
+    if (chat == null || chat.isGroup) return;
+
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? '';
+    if (chat.id.isEmpty || chat.id == currentUserId) return;
+
+    await CryptoService.instance.publicKeyOf(chat.id);
   }
 
   void _onScroll() {
@@ -91,85 +101,106 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _showCreateGroupDialog() async {
     final controller = TextEditingController();
     File? pickedImage;
+    bool isCreating = false;
 
     final group = await showDialog<ChatItem>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.groups_rounded, color: Colors.teal),
-              SizedBox(width: 8),
-              Text('New Group'),
-            ],
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Row(
               children: [
-                UserImagePicker(
-                  onSelectImage: (file) {
-                    pickedImage = file;
-                  },
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: controller,
-                  autofocus: true,
-                  decoration: const InputDecoration(
-                    hintText: 'Enter group name...',
-                    labelText: 'Group Name',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
+                Icon(Icons.groups_rounded, color: Colors.teal),
+                SizedBox(width: 8),
+                Text('New Group'),
               ],
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AbsorbPointer(
+                    absorbing: isCreating,
+                    child: UserImagePicker(
+                      onSelectImage: (file) {
+                        pickedImage = file;
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    enabled: !isCreating,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      hintText: 'Enter group name...',
+                      labelText: 'Group Name',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            ElevatedButton(
-              onPressed: () async {
-                final name = controller.text.trim();
-                if (name.isNotEmpty) {
-                  final isTaken =
-                      await MessageRepository.instance.isGroupNameTaken(name);
-                  if (isTaken) {
-                    if (context.mounted) {
-                      AppAlerts.showSnackBar(
-                        context,
-                        'A group named "$name" already exists. Please choose a different name.',
-                        isError: true,
-                      );
-                    }
-                    return;
-                  }
+            actions: [
+              TextButton(
+                onPressed: isCreating ? null : () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: isCreating
+                    ? null
+                    : () async {
+                        final name = controller.text.trim();
+                        if (name.isEmpty) return;
 
-                  final tempGroupId =
-                      'group_${DateTime.now().millisecondsSinceEpoch}';
-                  String imageUrl = '';
-                  if (pickedImage != null) {
-                    imageUrl =
-                        await MessageRepository.instance.uploadGroupImage(
-                      pickedImage!,
-                      tempGroupId,
-                    );
-                  }
-                  final created =
-                      await MessageRepository.instance.createGroup(
-                    groupName: name,
-                    imageUrl: imageUrl,
-                  );
-                  if (context.mounted) {
-                    Navigator.pop(context, created);
-                  }
-                }
-              },
-              child: const Text('Create'),
-            ),
-          ],
+                        setDialogState(() {
+                          isCreating = true;
+                        });
+
+                        final isTaken = await MessageRepository.instance
+                            .isGroupNameTaken(name);
+                        if (isTaken) {
+                          if (context.mounted) {
+                            AppAlerts.showSnackBar(
+                              context,
+                              'A group named "$name" already exists. Please choose a different name.',
+                              isError: true,
+                            );
+                          }
+                          setDialogState(() {
+                            isCreating = false;
+                          });
+                          return;
+                        }
+
+                        final tempGroupId =
+                            'group_${DateTime.now().millisecondsSinceEpoch}';
+                        String imageUrl = '';
+                        if (pickedImage != null) {
+                          imageUrl = await MessageRepository.instance
+                              .uploadGroupImage(pickedImage!, tempGroupId);
+                        }
+
+                        final created = await MessageRepository.instance
+                            .createGroup(groupName: name, imageUrl: imageUrl);
+                        setState(() {
+                          isCreating = false;
+                        });
+
+                        if (context.mounted) {
+                          Navigator.pop(context, created);
+                        }
+                      },
+                child: isCreating
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Create'),
+              ),
+            ],
+          ),
         );
       },
     );
@@ -193,7 +224,10 @@ class _ChatScreenState extends State<ChatScreen> {
         chatId = activeChat.id;
         recipientId = null;
       } else {
-        chatId = MessageRepository.getDirectChatId(currentUserId, activeChat.id);
+        chatId = MessageRepository.getDirectChatId(
+          currentUserId,
+          activeChat.id,
+        );
         recipientId = activeChat.id;
       }
     } else {
@@ -322,7 +356,10 @@ class _ChatScreenState extends State<ChatScreen> {
             return AlertDialog(
               title: Row(
                 children: [
-                  const Icon(Icons.report_problem_outlined, color: Colors.amber),
+                  const Icon(
+                    Icons.report_problem_outlined,
+                    color: Colors.amber,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -345,47 +382,45 @@ class _ChatScreenState extends State<ChatScreen> {
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
-                    ...reasons.map(
-                      (reason) {
-                        final isSelected = selectedReason == reason;
-                        return InkWell(
-                          onTap: () {
-                            setDialogState(() => selectedReason = reason);
-                          },
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 6.0,
-                              horizontal: 4.0,
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  isSelected
-                                      ? Icons.radio_button_checked
-                                      : Icons.radio_button_off,
-                                  size: 20,
-                                  color: isSelected
-                                      ? Theme.of(context).colorScheme.primary
-                                      : Theme.of(context).colorScheme.outline,
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    reason,
-                                    style: TextStyle(
-                                      fontWeight: isSelected
-                                          ? FontWeight.w600
-                                          : FontWeight.normal,
-                                    ),
+                    ...reasons.map((reason) {
+                      final isSelected = selectedReason == reason;
+                      return InkWell(
+                        onTap: () {
+                          setDialogState(() => selectedReason = reason);
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 6.0,
+                            horizontal: 4.0,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                isSelected
+                                    ? Icons.radio_button_checked
+                                    : Icons.radio_button_off,
+                                size: 20,
+                                color: isSelected
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Theme.of(context).colorScheme.outline,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  reason,
+                                  style: TextStyle(
+                                    fontWeight: isSelected
+                                        ? FontWeight.w600
+                                        : FontWeight.normal,
                                   ),
                                 ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
-                        );
-                      },
-                    ),
+                        ),
+                      );
+                    }),
                     const SizedBox(height: 8),
                     TextField(
                       controller: detailsController,
@@ -455,70 +490,93 @@ class _ChatScreenState extends State<ChatScreen> {
                 )
               : null,
           title: activeChat != null
-              ? InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () async {
-                    if (activeChat.isGroup) {
-                      final result = await Navigator.push<dynamic>(
-                        context,
-                        MaterialPageRoute(
-                          builder: (ctx) =>
-                              GroupSettingsScreen(group: activeChat),
-                        ),
-                      );
-                      if (context.mounted) {
-                        if (result == 'deleted') {
-                          setState(() {
-                            _selectedChat = null;
-                            LocalNotificationManager.setActiveChatId(null);
-                          });
-                          AppAlerts.showSnackBar(context, 'Group deleted');
-                        } else if (result is ChatItem) {
-                          setState(() {
-                            _selectedChat = result;
-                          });
-                        }
-                      }
-                    }
-                  },
-                  child: Row(
-                    children: [
-                      if (activeChat.isGroup)
-                        CircleAvatar(
-                          radius: 18,
-                          backgroundColor:
-                              Theme.of(context).colorScheme.primaryContainer,
-                          backgroundImage: activeChat.avatarUrl.isNotEmpty
-                              ? NetworkImage(activeChat.avatarUrl)
-                              : null,
-                          child: activeChat.avatarUrl.isEmpty
-                              ? const Icon(Icons.groups_rounded, size: 20)
-                              : null,
-                        )
-                      else if (activeChat.avatarUrl.isNotEmpty)
-                        CircleAvatar(
-                          radius: 18,
-                          backgroundImage: NetworkImage(activeChat.avatarUrl),
-                        )
-                      else
-                        CircleAvatar(
-                          radius: 18,
-                          backgroundColor:
-                              Theme.of(context).colorScheme.primaryContainer,
-                          child: Text(
-                            activeChat.name.isNotEmpty
-                                ? activeChat.name[0].toUpperCase()
-                                : '?',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onPrimaryContainer,
-                            ),
-                          ),
-                        ),
-                      const SizedBox(width: 10),
-                      Expanded(
+              ? Row(
+                  children: [
+                    InkWell(
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => ImageViewer(imageType: ImageType.network,imageUrl: activeChat.avatarUrl,),),),
+                      child: Hero(
+                        tag: activeChat.avatarUrl,
+                        child: (activeChat.isGroup)
+                            ? CircleAvatar(
+                                radius: 18,
+                                backgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.primaryContainer,
+                                backgroundImage: activeChat.avatarUrl.isNotEmpty
+                                    ? NetworkImage(activeChat.avatarUrl)
+                                    : null,
+                                child: activeChat.avatarUrl.isEmpty
+                                    ? const Icon(Icons.groups_rounded, size: 20)
+                                    : null,
+                              )
+                            : (activeChat.avatarUrl.isNotEmpty)
+                            ? CircleAvatar(
+                                radius: 18,
+                                backgroundImage: NetworkImage(
+                                  activeChat.avatarUrl,
+                                ),
+                              )
+                            : CircleAvatar(
+                                radius: 18,
+                                backgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.primaryContainer,
+                                child: Text(
+                                  activeChat.name.isNotEmpty
+                                      ? activeChat.name[0].toUpperCase()
+                                      : '?',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onPrimaryContainer,
+                                  ),
+                                ),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: () async {
+                          if (activeChat.isGroup) {
+                            final currentUserId = Supabase
+                                    .instance.client.auth.currentUser?.id ??
+                                '';
+                            final isOwner = activeChat.ownerId.isEmpty ||
+                                activeChat.isOwner(currentUserId);
+                            if (!isOwner) {
+                              AppAlerts.showSnackBar(
+                                context,
+                                'Only the group owner can manage group settings.',
+                                isError: true,
+                              );
+                              return;
+                            }
+
+                            final result = await Navigator.push<dynamic>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (ctx) =>
+                                    GroupSettingsScreen(group: activeChat),
+                              ),
+                            );
+                            if (context.mounted) {
+                              if (result == 'deleted') {
+                                setState(() {
+                                  _selectedChat = null;
+                                  LocalNotificationManager.setActiveChatId(null);
+                                });
+                                AppAlerts.showSnackBar(context, 'Group deleted');
+                              } else if (result is ChatItem) {
+                                setState(() {
+                                  _selectedChat = result;
+                                });
+                              }
+                            }
+                          }
+                        },
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -526,24 +584,25 @@ class _ChatScreenState extends State<ChatScreen> {
                               activeChat.name,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleMedium
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.bold),
                             ),
                             Row(
                               children: [
-                                if (activeChat.isGroup && activeChat.isPrivate) ...[
-                                  const Icon(Icons.lock_rounded, size: 12, color: Colors.teal),
+                                if (activeChat.isGroup &&
+                                    activeChat.isPrivate) ...[
+                                  const Icon(
+                                    Icons.lock_rounded,
+                                    size: 12,
+                                    color: Colors.teal,
+                                  ),
                                   const SizedBox(width: 4),
                                 ],
                                 Text(
                                   activeChat.isGroup
                                       ? (activeChat.isPrivate
-                                          ? 'Private Group'
-                                          : 'Group Conversation')
+                                            ? 'Private Group'
+                                            : 'Group Conversation')
                                       : 'Direct Message',
                                   style: const TextStyle(
                                     fontSize: 11,
@@ -555,8 +614,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           ],
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -564,9 +623,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     Text(
                       'S Chat',
                       style: Theme.of(context).textTheme.titleLarge!.copyWith(
-                            fontFamily: 'Audiowide',
-                            fontStyle: FontStyle.italic,
-                          ),
+                        fontFamily: 'Audiowide',
+                        fontStyle: FontStyle.italic,
+                      ),
                     ),
                     StreamBuilder<bool>(
                       stream: MessageRepository.instance.isOnlineStream,
@@ -618,9 +677,16 @@ class _ChatScreenState extends State<ChatScreen> {
                       value: 'sign_out',
                       child: Row(
                         children: [
-                          Icon(Icons.logout_rounded, size: 20, color: Colors.redAccent),
+                          Icon(
+                            Icons.logout_rounded,
+                            size: 20,
+                            color: Colors.redAccent,
+                          ),
                           SizedBox(width: 12),
-                          Text('Sign Out', style: TextStyle(color: Colors.redAccent)),
+                          Text(
+                            'Sign Out',
+                            style: TextStyle(color: Colors.redAccent),
+                          ),
                         ],
                       ),
                     ),
@@ -653,9 +719,16 @@ class _ChatScreenState extends State<ChatScreen> {
                     value: 'sign_out',
                     child: Row(
                       children: [
-                        Icon(Icons.logout_rounded, size: 20, color: Colors.redAccent),
+                        Icon(
+                          Icons.logout_rounded,
+                          size: 20,
+                          color: Colors.redAccent,
+                        ),
                         SizedBox(width: 12),
-                        Text('Sign Out', style: TextStyle(color: Colors.redAccent)),
+                        Text(
+                          'Sign Out',
+                          style: TextStyle(color: Colors.redAccent),
+                        ),
                       ],
                     ),
                   ),
@@ -666,6 +739,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         floatingActionButton: activeChat == null
             ? FloatingActionButton(
+                heroTag: 'fab_new_group',
                 onPressed: _showCreateGroupDialog,
                 tooltip: 'New Group',
                 child: const Icon(Icons.group_add_rounded),
@@ -680,6 +754,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Padding(
                     padding: const EdgeInsets.only(bottom: 64),
                     child: FloatingActionButton.small(
+                      heroTag: 'fab_jump_bottom',
                       onPressed: _jumpToBottom,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -693,10 +768,27 @@ class _ChatScreenState extends State<ChatScreen> {
           child: activeChat == null
               ? ChatList(
                   onSelectChat: (chat) {
+                    final currentUserId =
+                        Supabase.instance.client.auth.currentUser?.id ?? '';
+                    if (chat.isGroup && chat.isPrivate) {
+                      final isAuthorized = chat.ownerId.isEmpty ||
+                          chat.isOwner(currentUserId) ||
+                          chat.memberIds.contains(currentUserId);
+                      if (!isAuthorized) {
+                        AppAlerts.showSnackBar(
+                          context,
+                          'This is a private group. Only invited members can access it.',
+                          isError: true,
+                        );
+                        return;
+                      }
+                    }
+
                     setState(() {
                       _selectedChat = chat;
                       LocalNotificationManager.setActiveChatId(chat.id);
                     });
+                    unawaited(_loadReceiverPublicKey());
                   },
                 )
               : Column(

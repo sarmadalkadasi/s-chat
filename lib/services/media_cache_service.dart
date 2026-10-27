@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:s_chat/services/file_transfer_service.dart';
 
@@ -16,7 +16,8 @@ class MediaCacheService {
     return base64Url.encode(utf8.encode(url)).replaceAll('=', '');
   }
 
-  Future<File> _getCacheFile(String url) async {
+  Future<File?> _getCacheFile(String url) async {
+    if (kIsWeb) return null;
     final key = _getCacheKey(url);
     final dir = await getApplicationSupportDirectory();
     final cacheDir = Directory('${dir.path}/s_chat_media_cache');
@@ -34,23 +35,25 @@ class MediaCacheService {
     String url, {
     void Function(double progress)? onProgress,
   }) async {
-    if (url.isEmpty) return null;
+    if (url.isEmpty || kIsWeb) return null;
 
     // 1. Check memory cache
     if (_memoryCache.containsKey(url)) {
       final file = await _getCacheFile(url);
-      if (await file.exists()) return file;
+      if (file != null && await file.exists()) return file;
     }
 
     // 2. Check local disk cache
     final cacheFile = await _getCacheFile(url);
-    if (await cacheFile.exists() && await cacheFile.length() > 0) {
+    if (cacheFile != null && await cacheFile.exists() && await cacheFile.length() > 0) {
       try {
         final bytes = await cacheFile.readAsBytes();
         _memoryCache[url] = bytes;
         return cacheFile;
       } catch (_) {}
     }
+
+    if (cacheFile == null) return null;
 
     // 3. Deduplicate pending in-flight downloads
     if (_pendingDownloads.containsKey(url)) {

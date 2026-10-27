@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 
 class MediaCompressionService {
   MediaCompressionService._();
@@ -35,6 +35,7 @@ class MediaCompressionService {
     int targetWidth = 1024,
     int targetHeight = 1024,
   }) async {
+    if (kIsWeb) return inputFile;
     try {
       final bytes = await inputFile.readAsBytes();
       final compressed = await compressImageBytes(

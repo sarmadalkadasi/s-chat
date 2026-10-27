@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/services/message_repository.dart';
@@ -49,6 +50,7 @@ class _ChatMediaMessageBubbleState extends State<ChatMediaMessageBubble> {
   String? get _existingLocalPath {
     final path = _message.mediaLocalPath;
     if (path == null || path.isEmpty) return null;
+    if (kIsWeb) return null; // dart:io File not available on web
     try {
       return File(path).existsSync() ? path : null;
     } catch (_) {

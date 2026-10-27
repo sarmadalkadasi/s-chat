@@ -1,19 +1,35 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:s_chat/models/chat_message.dart';
 import 'package:s_chat/s_chat.dart';
+import 'package:s_chat/services/crypto_service.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+const String _supabaseUrl = String.fromEnvironment(
+  'SUPABASE_URL',
+  defaultValue: 'https://xchbrnfkuiozonulvfoi.supabase.co',
+);
+
+const String _supabaseAnonKey = String.fromEnvironment(
+  'SUPABASE_ANON_KEY',
+  defaultValue: 'sb_publishable_3CQgNuTLRzC4iiRh1yN-bw_Bulr2uZ7',
+);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(
-    url: 'https://xchbrnfkuiozonulvfoi.supabase.co',
-    publishableKey: 'sb_secret_lJTya6AdqldBwl9N2RVRSA_A91WyK5I',
+    url: _supabaseUrl,
+    publishableKey: _supabaseAnonKey,
   );
   // Initialize notifications
   await LocalNotificationManager.initialize();
+
+  // Make sure this device owns an encryption key pair for the signed-in user.
+  final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+  if (currentUserId != null) {
+    await CryptoService.instance.initUserKeys(currentUserId);
+  }
 
   // Pre-load offline messages and outbox before UI renders
   await MessageRepository.instance.init();
@@ -50,16 +66,15 @@ void listenToIncomingMessages() {
               final latestMessage = messages.first;
               final currentUserId =
                   Supabase.instance.client.auth.currentUser?.id;
-
-              final chatMsg = ChatMessage.fromMap(latestMessage);
+              final String senderId = latestMessage['user_id'] ?? '';
+              final String messageText = latestMessage['text'] ?? '';
+              final String username = latestMessage['username'] ?? 'Anonymous';
 
               // Notify only if someone else sent it
-              if (chatMsg.userId != currentUserId &&
-                  chatMsg.displayText.isNotEmpty) {
+              if (senderId != currentUserId && messageText.isNotEmpty) {
                 LocalNotificationManager.showNotification(
-                  title: chatMsg.username,
-                  body: chatMsg.displayText,
-                  chatId: chatMsg.userId,
+                  title: username,
+                  body: messageText,
                 );
               }
             },
