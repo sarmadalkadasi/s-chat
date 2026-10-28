@@ -1,5 +1,4 @@
-﻿// ignore_for_file: avoid_web_libraries_in_flutter
-import 'dart:html' as html;
+﻿import 'package:web/web.dart' as web;
 
 class ApkInfo {
   final String url;
@@ -10,7 +9,7 @@ class ApkInfo {
 /// Detects Android version from the browser user-agent and returns the
 /// appropriate APK URL and button label.
 ApkInfo apkInfoForDevice() {
-  final ua = html.window.navigator.userAgent;
+  final ua = web.window.navigator.userAgent;
   final isAndroid = RegExp(r'Android', caseSensitive: false).hasMatch(ua);
 
   if (isAndroid) {
@@ -29,7 +28,10 @@ ApkInfo apkInfoForDevice() {
 
 /// Triggers a file download in the browser.
 void launchApkDownload(String url) {
-  html.AnchorElement(href: url)
-    ..setAttribute('download', '')
-    ..click();
+  final anchor = web.document.createElement('a') as web.HTMLAnchorElement
+    ..href = url
+    ..setAttribute('download', '');
+  web.document.body?.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
