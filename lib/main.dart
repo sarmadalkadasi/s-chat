@@ -6,18 +6,18 @@ import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-const String _supabaseUrl = String.fromEnvironment(
-  'SUPABASE_URL',
-  defaultValue: 'https://xchbrnfkuiozonulvfoi.supabase.co',
-);
-
-const String _supabaseAnonKey = String.fromEnvironment(
-  'SUPABASE_ANON_KEY',
-  defaultValue: 'sb_publishable_3CQgNuTLRzC4iiRh1yN-bw_Bulr2uZ7',
-);
+const String _supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+const String _supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  if (_supabaseUrl.isEmpty || _supabaseAnonKey.isEmpty) {
+    throw StateError(
+      'Missing SUPABASE_URL or SUPABASE_ANON_KEY build configuration.',
+    );
+  }
+
   await Supabase.initialize(
     url: _supabaseUrl,
     publishableKey: _supabaseAnonKey,

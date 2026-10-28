@@ -8,10 +8,11 @@ A modern, fast, cross-platform chat application built with **Flutter** and power
 
 Download the Android APK build for your device architecture:
 
-| Device Architecture / OS | APK File Name | Download Link |
-| :--- | :--- | :--- |
+| Device Architecture / OS | APK File Name | Download Link                                        |
+| :--- | :--- |:-----------------------------------------------------|
+| **Android 8.0+ (ARM64 / 64-bit)** | `s_chat-release.apk` | [⬇ Download APK (all)](web/apks/s_chat-release.apk)  |
 | **Android 8.0+ (ARM64 / 64-bit)** | `s_chat-8.apk` | [⬇ Download APK (Android 8+)](web/apks/s_chat-8.apk) |
-| **Android 7.0 (ARMv7 / 32-bit)** | `s_chat-7.apk` | [⬇ Download APK (Android 7)](web/apks/s_chat-7.apk) |
+| **Android 7.0 (ARMv7 / 32-bit)** | `s_chat-7.apk` | [⬇ Download APK (Android 7)](web/apks/s_chat-7.apk)  |
 
 ---
 
