@@ -8,10 +8,12 @@ import 'package:s_chat/screens/group_settings.dart';
 import 'package:s_chat/services/crypto_service.dart';
 import 'package:s_chat/services/local_notification_manager.dart';
 import 'package:s_chat/services/message_repository.dart';
+import 'package:s_chat/s_chat.dart';
 import 'package:s_chat/utils/app_alerts.dart';
 import 'package:s_chat/widgets/chat/chat_list.dart';
 import 'package:s_chat/widgets/chat/chat_media_picker.dart';
 import 'package:s_chat/widgets/chat/chat_message.dart';
+import 'package:s_chat/widgets/chat/chat_wallpaper.dart';
 import 'package:s_chat/widgets/chat/image_viewer.dart';
 import 'package:s_chat/widgets/chat/new_message.dart';
 import 'package:s_chat/widgets/user/user_image_picker.dart';
@@ -268,6 +270,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleMenuAction(String value, ChatItem? activeChat) {
     switch (value) {
+      case 'toggle_theme':
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        themeModeNotifier.value = isDark ? ThemeMode.light : ThemeMode.dark;
+        break;
       case 'new_group':
         _showCreateGroupDialog();
         break;
@@ -650,8 +656,25 @@ class _ChatScreenState extends State<ChatScreen> {
               tooltip: 'More options',
               onSelected: (value) => _handleMenuAction(value, activeChat),
               itemBuilder: (context) {
+                final isDark = Theme.of(context).brightness == Brightness.dark;
+                final themeMenuItem = PopupMenuItem<String>(
+                  value: 'toggle_theme',
+                  child: Row(
+                    children: [
+                      Icon(
+                        isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+                        size: 20,
+                        color: isDark ? Colors.amber : Colors.indigo,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(isDark ? 'Light Mode' : 'Dark Mode'),
+                    ],
+                  ),
+                );
+
                 if (activeChat == null) {
                   return [
+                    themeMenuItem,
                     const PopupMenuItem(
                       value: 'new_group',
                       child: Row(
@@ -694,6 +717,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 }
 
                 return [
+                  themeMenuItem,
                   const PopupMenuItem(
                     value: 'clear_chat',
                     child: Row(
@@ -794,11 +818,16 @@ class _ChatScreenState extends State<ChatScreen> {
               : Column(
                   children: [
                     Expanded(
-                      child: ChatMessages(
-                        scrollController: _scrollController,
-                        editingNotifier: _editingNotifier,
-                        replyingNotifier: _replyingNotifier,
-                        activeChat: activeChat,
+                      child: ChatWallpaperWidget(
+                        wallpaperAsset: Theme.of(context).brightness == Brightness.dark
+                            ? 'assets/img/bg_dark.png'
+                            : 'assets/img/bg_light.png',
+                        child: ChatMessages(
+                          scrollController: _scrollController,
+                          editingNotifier: _editingNotifier,
+                          replyingNotifier: _replyingNotifier,
+                          activeChat: activeChat,
+                        ),
                       ),
                     ),
                     NewMessage(
